@@ -1,0 +1,21 @@
+# version control
+.git
+.gitignore
+
+# never bake credentials into the image
+.env
+
+# docs and tooling — not needed in the build context
+*.md
+Makefile
+Dockerfile
+.dockerignore
+docker-compose.yaml
+.env.example
+
+# local build artifact
+chowkidar-agent
+
+# test files are not compiled by go build
+*_test.go
+testdata/

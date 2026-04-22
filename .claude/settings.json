@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//usr/local/lib/**)",
+      "Bash(nvm --version)",
+      "Bash(fnm --version)",
+      "Bash(go run *)",
+      "Bash(curl -s http://localhost:8080/api/v1/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"username\":\"admin\",\"password\":\"admin\"}')",
+      "Bash(curl -v http://localhost:8080/api/v1/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"username\":\"admin\",\"password\":\"admin\"}')",
+      "Bash(pkill -f \"go run\")",
+      "Bash(curl -s http://localhost:8080/)",
+      "Bash(pkill -9 -f \"go run\")",
+      "Read(//tmp/**)",
+      "Bash(*)"
+    ],
+    "additionalDirectories": [
+      "/tmp",
+      "/home/technonext/.claude/projects/-home-technonext-Documents-chowkidar"
+    ]
+  }
+}
