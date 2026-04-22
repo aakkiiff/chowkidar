@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/technonext/chowkidar/agent/collect"
 	"github.com/technonext/chowkidar/agent/config"
+	"github.com/technonext/chowkidar/agent/logs"
 	"github.com/technonext/chowkidar/agent/report"
 	"github.com/technonext/chowkidar/agent/types"
 )
@@ -43,6 +44,18 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	logCollector, err := logs.New()
+	if err != nil {
+		log.Fatalf("log collector: %v", err)
+	}
+	defer logCollector.Close()
+
+	logShipper := logs.NewShipper(cfg.ServerURL, cfg.Token, cfg.LogBatchMS, cfg.LogBatchBytes)
+	defer logShipper.Close()
+
+	go logCollector.Run(ctx)
+	go logShipper.Run(ctx, logCollector.Out())
 
 	ticker := time.NewTicker(cfg.CollectInterval)
 	defer ticker.Stop()

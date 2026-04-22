@@ -100,6 +100,84 @@ export function getContainerHistory(
   );
 }
 
+// ── Log fetch + streaming ─────────────────────────────────────────────────────
+
+export function getRecentLogs(
+  token: string,
+  agentId: string,
+  name: string,
+  minutes: number,
+) {
+  return request<LogLine[]>(
+    `/agents/${agentId}/containers/${encodeURIComponent(name)}/logs?minutes=${minutes}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+}
+
+export interface LogLine {
+  container_id: string;
+  container_name: string;
+  stream: 'stdout' | 'stderr';
+  timestamp: string;
+  text: string;
+}
+
+// streamLogs opens an SSE connection to the log tail endpoint, authed with the
+// bearer token. onLine is called for each incoming event; the returned AbortController
+// can be used to close the stream (and is triggered automatically by the signal).
+export function streamLogs(
+  token: string,
+  agentId: string,
+  name: string,
+  tail: number,
+  onLine: (l: LogLine) => void,
+  onError: (err: unknown) => void,
+): AbortController {
+  const ctrl = new AbortController();
+  const url = `${API_BASE}/agents/${agentId}/containers/${encodeURIComponent(name)}/logs/tail?tail=${tail}`;
+
+  (async () => {
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: ctrl.signal,
+      });
+      if (res.status === 401) {
+        clearSession();
+        throw new Error('Session expired');
+      }
+      if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`);
+
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buf += value;
+        let idx: number;
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          // skip heartbeat comments (": ping")
+          if (frame.startsWith(':')) continue;
+          const dataLine = frame.split('\n').find(l => l.startsWith('data: '));
+          if (!dataLine) continue;
+          try {
+            onLine(JSON.parse(dataLine.slice(6)) as LogLine);
+          } catch {
+            /* ignore malformed frame */
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      onError(err);
+    }
+  })();
+
+  return ctrl;
+}
+
 // ── Session ───────────────────────────────────────────────────────────────────
 
 const TOKEN_KEY = 'chowkidar_token';

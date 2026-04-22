@@ -10,17 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/technonext/chowkidar/server/logbroker"
+	"github.com/technonext/chowkidar/server/logstore"
 	"github.com/technonext/chowkidar/server/store"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type Handler struct {
 	store  *store.Store
+	logs   *logstore.Store
+	broker *logbroker.Broker
 	secret string
 }
 
-func NewHandler(s *store.Store, jwtSecret string) *Handler {
-	return &Handler{store: s, secret: jwtSecret}
+func NewHandler(s *store.Store, ls *logstore.Store, br *logbroker.Broker, jwtSecret string) *Handler {
+	return &Handler{store: s, logs: ls, broker: br, secret: jwtSecret}
 }
 
 type ctxKey string

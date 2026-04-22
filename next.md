@@ -75,3 +75,7 @@ for database:
 - how to set up and manage the database
 
 this 
+
+
+- add dark mode and light mode toggle in the frontend
+- make the frontend responsive and mobile-friendly

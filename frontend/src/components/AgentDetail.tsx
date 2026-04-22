@@ -18,6 +18,7 @@ import {
   type ContainerPoint,
   type HistoryRange,
 } from '../api/client';
+import LogPanel from './LogPanel';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
 
@@ -444,6 +445,15 @@ export default function AgentDetail({
               </figure>
             </div>
           </div>
+        )}
+
+        {selected && (
+          <LogPanel
+            token={token}
+            agentId={agent.id}
+            containerName={selected}
+            onExpired={onExpired}
+          />
         )}
       </main>
     </div>

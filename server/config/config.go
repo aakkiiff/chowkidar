@@ -12,6 +12,10 @@ type Config struct {
 	AdminUser               string
 	AdminPass               string
 	RetentionDaysContainers int
+	LogDir                  string
+	LogRetentionDays        int
+	LogMaxFileMB            int
+	LogMaxRotations         int
 }
 
 func Load() *Config {
@@ -22,6 +26,10 @@ func Load() *Config {
 		AdminUser:               getEnv("ADMIN_USERNAME", "admin"),
 		AdminPass:               getEnv("ADMIN_PASSWORD", "changeme"),
 		RetentionDaysContainers: getEnvInt("RETENTION_DAYS_CONTAINERS", 7),
+		LogDir:                  getEnv("LOG_DIR", "./db/logs"),
+		LogRetentionDays:        getEnvInt("LOG_RETENTION_DAYS", 3),
+		LogMaxFileMB:            getEnvInt("LOG_MAX_FILE_MB", 100),
+		LogMaxRotations:         getEnvInt("LOG_MAX_ROTATIONS", 10),
 	}
 }
 
