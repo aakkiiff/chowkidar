@@ -79,3 +79,14 @@ this
 
 - add dark mode and light mode toggle in the frontend
 - make the frontend responsive and mobile-friendly
+
+
+on every agent card
+- add a alert button
+- button to enable/disable alerts for that agent
+- when alert is enabled, show a form to set the alert threshold (e.g. CPU usage > 80%) for system metrics (CPU, memory, disk usage, etc.),checkbox to select which metric to monitor, and a field to enter the webhook URL to send the alert to.
+- when the threshold is breached, show a notification in the frontend and also send an webhook to a specified URL with the alert details (agent identity, metric, value, timestamp, etc.)
+- also checkbox to monitor alert on container metrics (CPU, memory usage, etc.) and set threshold for that as well, also send webhook when breached.
+- also send alert is container is in not running state for more than 1 minute. 
+- and if agent is unreachable for more than 1 minute, send an alert as well.
+- make sure to handle proper retries and error handling in case of network issues or server downtime when sending alerts.

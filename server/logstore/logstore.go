@@ -54,9 +54,16 @@ func New(cfg Config) (*Store, error) {
 	return &Store{cfg: cfg, writers: map[string]*writer{}}, nil
 }
 
-// Append writes one line to the active file for its (agent, container).
-// Rotates when MaxFileBytes is exceeded.
+// Append writes one line to the active file. Rotates when MaxFileBytes is
+// exceeded. JSON marshal happens outside the mutex so slow encoding does not
+// serialize writers from other containers.
 func (s *Store) Append(agentID string, l Line) error {
+	data, err := json.Marshal(l)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
 	key := agentID + "/" + safeName(l.ContainerName)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,13 +72,6 @@ func (s *Store) Append(agentID string, l Line) error {
 	if err != nil {
 		return err
 	}
-
-	// Stored format: one JSON object per line (ndjson). Small + greppable.
-	data, err := json.Marshal(l)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
 
 	n, err := w.bw.Write(data)
 	if err != nil {
@@ -85,7 +85,6 @@ func (s *Store) Append(agentID string, l Line) error {
 	return nil
 }
 
-// Flush forces a flush of all buffered writers to disk.
 func (s *Store) Flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -148,8 +147,6 @@ func (s *Store) rotateLocked(key string, w *writer) error {
 	return nil
 }
 
-// pruneRotations removes the oldest .gz rotations when more than MaxRotations
-// exist for this container.
 func (s *Store) pruneRotations(activePath string) {
 	dir := filepath.Dir(activePath)
 	base := filepath.Base(activePath)
@@ -231,8 +228,9 @@ func (s *Store) Tail(agentID, name string, n int) ([]Line, error) {
 	return out, nil
 }
 
-// tailLines reads up to n trailing lines from f by scanning backwards in 32KB
-// chunks. Good enough for log tail queries of a few thousand lines.
+// tailLines reads up to n trailing lines from f by scanning backwards in
+// 32 KB chunks, writing each chunk into a single pre-sized buffer from the
+// tail end. Avoids the O(n²) copy of repeatedly rebuilding a growing buffer.
 func tailLines(f *os.File, n int) [][]byte {
 	const chunk = 32 * 1024
 	info, err := f.Stat()
@@ -244,34 +242,39 @@ func tailLines(f *os.File, n int) [][]byte {
 		return nil
 	}
 
-	var (
-		buf      bytes.Buffer
-		off      = size
-		newlines int
-	)
-	tmp := make([]byte, chunk)
-	for off > 0 && newlines <= n {
+	// Read at most `size` bytes, bounded by a sane upper cap so a huge file
+	// with few newlines doesn't load everything. 8 MB = ~40K typical log lines.
+	const maxRead = 8 * 1024 * 1024
+	maxBytes := size
+	if maxBytes > maxRead {
+		maxBytes = maxRead
+	}
+
+	buf := make([]byte, maxBytes)
+	var head int64 = maxBytes // writes fill buf[head:maxBytes]
+	off := size
+	newlines := 0
+
+	for off > 0 && newlines <= n && head > 0 {
 		sz := int64(chunk)
 		if off < sz {
 			sz = off
 		}
+		if head < sz {
+			sz = head
+		}
 		off -= sz
-		if _, err := f.ReadAt(tmp[:sz], off); err != nil && err != io.EOF {
+		head -= sz
+		if _, err := f.ReadAt(buf[head:head+sz], off); err != nil && err != io.EOF {
 			return nil
 		}
-		// Prepend chunk (buffer is building backwards).
-		grown := bytes.NewBuffer(make([]byte, 0, int(sz)+buf.Len()))
-		grown.Write(tmp[:sz])
-		grown.Write(buf.Bytes())
-		buf = *grown
-		newlines = bytes.Count(buf.Bytes(), []byte("\n"))
+		newlines = bytes.Count(buf[head:], []byte("\n"))
 	}
 
-	all := bytes.Split(bytes.TrimRight(buf.Bytes(), "\n"), []byte("\n"))
+	all := bytes.Split(bytes.TrimRight(buf[head:], "\n"), []byte("\n"))
 	if len(all) > n {
 		all = all[len(all)-n:]
 	}
-	// Copy out — underlying buf will be GC'd.
 	out := make([][]byte, len(all))
 	for i, b := range all {
 		out[i] = append([]byte(nil), b...)

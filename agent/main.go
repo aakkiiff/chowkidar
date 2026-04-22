@@ -45,11 +45,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	logCollector, err := logs.New()
-	if err != nil {
-		log.Fatalf("log collector: %v", err)
-	}
-	defer logCollector.Close()
+	logCollector := logs.New(dockerCollector.Client())
 
 	logShipper := logs.NewShipper(cfg.ServerURL, cfg.Token, cfg.LogBatchMS, cfg.LogBatchBytes)
 	defer logShipper.Close()

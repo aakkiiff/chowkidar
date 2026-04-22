@@ -11,6 +11,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -35,32 +36,23 @@ type Line struct {
 type Collector struct {
 	cli     *client.Client
 	out     chan Line
-	dropped uint64
+	dropped atomic.Uint64
 	mu      sync.Mutex
-	// active tracks the cancel function for each container tail goroutine.
-	active map[string]context.CancelFunc
+	active  map[string]context.CancelFunc
 }
 
-// Out returns a receive-only channel of log lines, aggregated from all
-// containers. Drop-oldest when full.
 func (c *Collector) Out() <-chan Line { return c.out }
 
-func (c *Collector) Dropped() uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.dropped
-}
+func (c *Collector) Dropped() uint64 { return c.dropped.Load() }
 
-func New() (*Collector, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return nil, err
-	}
+// New wraps an existing Docker client. Callers should reuse one client across
+// collectors to avoid multiple connections to the daemon.
+func New(cli *client.Client) *Collector {
 	return &Collector{
 		cli:    cli,
 		out:    make(chan Line, perContainerBuffer*4),
 		active: make(map[string]context.CancelFunc),
-	}, nil
+	}
 }
 
 // Run scans containers periodically and spawns a tail goroutine for each one
@@ -201,9 +193,7 @@ func (c *Collector) emit(id, name string, streamByte byte, payload []byte) {
 			case <-c.out:
 			default:
 			}
-			c.mu.Lock()
-			c.dropped++
-			c.mu.Unlock()
+			c.dropped.Add(1)
 			select {
 			case c.out <- l:
 			default:
@@ -234,4 +224,3 @@ func (c *Collector) stopAll() {
 	c.active = map[string]context.CancelFunc{}
 }
 
-func (c *Collector) Close() error { return c.cli.Close() }

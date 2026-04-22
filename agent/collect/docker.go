@@ -39,6 +39,10 @@ func NewDockerCollector() (*DockerCollector, error) {
 	}, nil
 }
 
+// Client returns the underlying Docker client so other packages (e.g. logs)
+// can share the single daemon connection instead of opening a second one.
+func (d *DockerCollector) Client() *client.Client { return d.cli }
+
 // Collect lists all containers and fetches their metrics concurrently.
 func (d *DockerCollector) Collect() ([]types.ContainerMetrics, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

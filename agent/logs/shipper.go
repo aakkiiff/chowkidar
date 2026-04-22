@@ -34,24 +34,28 @@ func NewShipper(serverURL, token string, batchMS time.Duration, batchBuf int) *S
 	}
 }
 
-// Run reads lines from src and ships batches until ctx is cancelled.
-// Reconnects with exponential backoff (capped) on network failure.
+// Run reconnects with exponential backoff on network failure, but fails fast
+// on HTTP 4xx (invalid token, bad body) — retrying those would just burn cycles.
 func (s *Shipper) Run(ctx context.Context, src <-chan Line) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		if err := s.ship(ctx, src); err != nil && ctx.Err() == nil {
-			log.Printf("[logs] ship: %v — retry in %v", err, backoff)
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
-			}
-			continue
+		err := s.ship(ctx, src)
+		if err == nil || ctx.Err() != nil {
+			return
 		}
-		backoff = time.Second
+		if isClientError(err) {
+			log.Printf("[logs] ship aborted: %v", err)
+			return
+		}
+		log.Printf("[logs] ship: %v — retry in %v", err, backoff)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
 	}
 }
 
@@ -115,9 +119,22 @@ func (s *Shipper) post(ctx context.Context, body []byte) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server %d: %s", resp.StatusCode, string(b))
+		return &httpError{code: resp.StatusCode, body: string(b)}
 	}
 	return nil
 }
 
 func (s *Shipper) Close() { s.client.CloseIdleConnections() }
+
+// httpError marks responses that came back as HTTP errors (not network failures).
+type httpError struct {
+	code int
+	body string
+}
+
+func (e *httpError) Error() string { return fmt.Sprintf("server %d: %s", e.code, e.body) }
+
+func isClientError(err error) bool {
+	he, ok := err.(*httpError)
+	return ok && he.code >= 400 && he.code < 500
+}
