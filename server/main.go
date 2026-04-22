@@ -49,7 +49,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := db.RollupAndPrune(cfg.RetentionDaysSystem, cfg.RetentionDaysContainers); err != nil {
+				if err := db.RollupAndPrune(cfg.RetentionDaysContainers); err != nil {
 					log.Printf("rollup: %v", err)
 				}
 			}

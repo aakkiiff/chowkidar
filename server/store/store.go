@@ -94,18 +94,11 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_ctr_raw ON container_metrics(agent_id, timestamp)`,
 
-		// 1-minute aggregates — kept for RETENTION_DAYS, queried for charts.
+		// Drop legacy system aggregates table if present — system is live-only now.
+		`DROP TABLE IF EXISTS system_metrics_1m`,
+
+		// 1-minute aggregates — only for containers. System metrics are live-only.
 		// ts_minute is a Unix epoch truncated to 60-second boundaries.
-		`CREATE TABLE IF NOT EXISTS system_metrics_1m (
-			agent_id      TEXT NOT NULL,
-			ts_minute     INTEGER NOT NULL,
-			cpu_percent   REAL,
-			mem_used_gb   REAL,
-			mem_total_gb  REAL,
-			disk_used_gb  REAL,
-			disk_total_gb REAL,
-			PRIMARY KEY (agent_id, ts_minute)
-		)`,
 		`CREATE TABLE IF NOT EXISTS container_metrics_1m (
 			agent_id       TEXT NOT NULL,
 			container_name TEXT NOT NULL,
@@ -298,25 +291,25 @@ func (s *Store) SaveReport(agentID string, ts time.Time, sys SystemMetrics, cont
 
 // ── History ───────────────────────────────────────────────────────────────────
 
-// GetSystemHistory returns 1-minute average system metrics for the given agent
-// since the specified time, ordered oldest-first for chart rendering.
-func (s *Store) GetSystemHistory(agentID string, since time.Time) ([]SystemPoint, error) {
+// GetContainerHistoryByName returns 1-minute average metrics for a single
+// container on the given agent, ordered oldest-first.
+func (s *Store) GetContainerHistoryByName(agentID, name string, since time.Time) ([]ContainerPoint, error) {
 	rows, err := s.db.Query(`
-		SELECT ts_minute, cpu_percent, mem_used_gb, mem_total_gb, disk_used_gb, disk_total_gb
-		FROM system_metrics_1m
-		WHERE agent_id = ? AND ts_minute >= ?
+		SELECT ts_minute, cpu_percent, mem_used_mb, mem_limit_mb
+		FROM container_metrics_1m
+		WHERE agent_id = ? AND container_name = ? AND ts_minute >= ?
 		ORDER BY ts_minute ASC
-	`, agentID, since.Unix())
+	`, agentID, name, since.Unix())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var points []SystemPoint
+	var points []ContainerPoint
 	for rows.Next() {
 		var tsUnix int64
-		var p SystemPoint
-		if err := rows.Scan(&tsUnix, &p.CPUPercent, &p.MemUsedGB, &p.MemTotalGB, &p.DiskUsedGB, &p.DiskTotalGB); err != nil {
+		var p ContainerPoint
+		if err := rows.Scan(&tsUnix, &p.CPUPercent, &p.MemUsedMB, &p.MemLimitMB); err != nil {
 			return nil, err
 		}
 		p.Timestamp = time.Unix(tsUnix, 0).UTC()
@@ -325,45 +318,18 @@ func (s *Store) GetSystemHistory(agentID string, since time.Time) ([]SystemPoint
 	return points, rows.Err()
 }
 
-// GetContainerHistory returns 1-minute average container metrics grouped by
-// container name, ordered oldest-first per container.
-func (s *Store) GetContainerHistory(agentID string, since time.Time) (map[string][]ContainerPoint, error) {
-	rows, err := s.db.Query(`
-		SELECT container_name, ts_minute, cpu_percent, mem_used_mb, mem_limit_mb
-		FROM container_metrics_1m
-		WHERE agent_id = ? AND ts_minute >= ?
-		ORDER BY container_name, ts_minute ASC
-	`, agentID, since.Unix())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make(map[string][]ContainerPoint)
-	for rows.Next() {
-		var name string
-		var tsUnix int64
-		var p ContainerPoint
-		if err := rows.Scan(&name, &tsUnix, &p.CPUPercent, &p.MemUsedMB, &p.MemLimitMB); err != nil {
-			return nil, err
-		}
-		p.Timestamp = time.Unix(tsUnix, 0).UTC()
-		result[name] = append(result[name], p)
-	}
-	return result, rows.Err()
-}
-
 // ── Rollup & Prune ────────────────────────────────────────────────────────────
 
 // RollupAndPrune should be called every minute. It:
-//  1. Aggregates raw data older than 1 minute into 1m buckets (idempotent via INSERT OR REPLACE)
-//  2. Prunes raw data older than 2 minutes (live cards need only the latest row)
-//  3. Prunes 1m data older than the configured retention windows
-func (s *Store) RollupAndPrune(systemDays, containerDays int) error {
+//  1. Aggregates raw container data older than 1 minute into 1m buckets (idempotent via INSERT OR REPLACE)
+//  2. Prunes raw data older than 2 minutes (live cards only read the latest row)
+//  3. Prunes container 1m aggregates older than the configured retention window
+//
+// System metrics are live-only — no aggregation, no long-term storage.
+func (s *Store) RollupAndPrune(containerDays int) error {
 	now := time.Now().UTC()
 	rollupBefore := now.Add(-time.Minute).Format(time.RFC3339)
 	rawCutoff := now.Add(-2 * time.Minute).Format(time.RFC3339)
-	sysCutoff := now.AddDate(0, 0, -systemDays).Unix()
 	ctrCutoff := now.AddDate(0, 0, -containerDays).Unix()
 
 	tx, err := s.db.Begin()
@@ -372,24 +338,8 @@ func (s *Store) RollupAndPrune(systemDays, containerDays int) error {
 	}
 	defer tx.Rollback()
 
-	// Roll up system metrics into 1-minute buckets.
-	// (CAST(strftime('%s',timestamp)/60)*60) floors the timestamp to the minute boundary.
-	if _, err := tx.Exec(`
-		INSERT OR REPLACE INTO system_metrics_1m
-			(agent_id, ts_minute, cpu_percent, mem_used_gb, mem_total_gb, disk_used_gb, disk_total_gb)
-		SELECT
-			agent_id,
-			(CAST(strftime('%s', timestamp) AS INTEGER) / 60) * 60,
-			AVG(cpu_percent), AVG(mem_used_gb), AVG(mem_total_gb),
-			AVG(disk_used_gb), AVG(disk_total_gb)
-		FROM system_metrics
-		WHERE timestamp < ?
-		GROUP BY agent_id, (CAST(strftime('%s', timestamp) AS INTEGER) / 60) * 60
-	`, rollupBefore); err != nil {
-		return fmt.Errorf("rollup system: %w", err)
-	}
-
 	// Roll up container metrics into 1-minute buckets.
+	// (CAST(strftime('%s',timestamp)/60)*60) floors the timestamp to the minute boundary.
 	if _, err := tx.Exec(`
 		INSERT OR REPLACE INTO container_metrics_1m
 			(agent_id, container_name, ts_minute, cpu_percent, mem_used_mb, mem_limit_mb)
@@ -415,10 +365,7 @@ func (s *Store) RollupAndPrune(systemDays, containerDays int) error {
 		return fmt.Errorf("prune container raw: %w", err)
 	}
 
-	// Prune 1m aggregates beyond retention window.
-	if _, err := tx.Exec(`DELETE FROM system_metrics_1m WHERE ts_minute < ?`, sysCutoff); err != nil {
-		return fmt.Errorf("prune system 1m: %w", err)
-	}
+	// Prune container 1m aggregates beyond retention window.
 	if _, err := tx.Exec(`DELETE FROM container_metrics_1m WHERE ts_minute < ?`, ctrCutoff); err != nil {
 		return fmt.Errorf("prune container 1m: %w", err)
 	}
@@ -456,15 +403,6 @@ type ContainerMetrics struct {
 	CPUPercent float64 `json:"cpu_percent"`
 	MemUsedMB  float64 `json:"mem_used_mb"`
 	MemLimitMB float64 `json:"mem_limit_mb"`
-}
-
-type SystemPoint struct {
-	Timestamp   time.Time `json:"timestamp"`
-	CPUPercent  float64   `json:"cpu_percent"`
-	MemUsedGB   float64   `json:"mem_used_gb"`
-	MemTotalGB  float64   `json:"mem_total_gb"`
-	DiskUsedGB  float64   `json:"disk_used_gb"`
-	DiskTotalGB float64   `json:"disk_total_gb"`
 }
 
 type ContainerPoint struct {

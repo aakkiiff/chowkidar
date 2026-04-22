@@ -6,12 +6,11 @@ import (
 )
 
 type Config struct {
-	Port                   string
-	JWTSecret              string
-	DBPath                 string
-	AdminUser              string
-	AdminPass              string
-	RetentionDaysSystem    int
+	Port                    string
+	JWTSecret               string
+	DBPath                  string
+	AdminUser               string
+	AdminPass               string
 	RetentionDaysContainers int
 }
 
@@ -22,7 +21,6 @@ func Load() *Config {
 		DBPath:                  getEnv("DB_PATH", "./db/chowkidar.db"),
 		AdminUser:               getEnv("ADMIN_USERNAME", "admin"),
 		AdminPass:               getEnv("ADMIN_PASSWORD", "changeme"),
-		RetentionDaysSystem:     getEnvInt("RETENTION_DAYS_SYSTEM", 7),
 		RetentionDaysContainers: getEnvInt("RETENTION_DAYS_CONTAINERS", 7),
 	}
 }

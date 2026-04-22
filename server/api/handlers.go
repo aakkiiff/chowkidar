@@ -174,21 +174,22 @@ func (h *Handler) AgentContainers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, containers)
 }
 
-// AgentHistory returns 1-minute aggregated system metrics for the requested
-// time range. Supported ranges: 1h, 6h, 24h, 7d (defaults to 1h).
-func (h *Handler) AgentHistory(w http.ResponseWriter, r *http.Request) {
+// ContainerHistory returns 1-minute aggregated metrics for a single container
+// over the requested time range. Supported ranges: 1h, 6h, 24h, 7d (default 1h).
+func (h *Handler) ContainerHistory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	name := r.PathValue("name")
 	since := time.Now().Add(-parseRange(r.URL.Query().Get("range")))
 
-	points, err := h.store.GetSystemHistory(id, since)
+	points, err := h.store.GetContainerHistoryByName(id, name, since)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to fetch history"})
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to fetch container history"})
 		return
 	}
 	if points == nil {
-		points = []store.SystemPoint{}
+		points = []store.ContainerPoint{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"system": points})
+	writeJSON(w, http.StatusOK, map[string]any{"points": points})
 }
 
 func parseRange(r string) time.Duration {

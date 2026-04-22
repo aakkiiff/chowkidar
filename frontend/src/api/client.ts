@@ -79,21 +79,25 @@ export function getAgentContainers(token: string, agentId: string) {
   });
 }
 
-export interface SystemPoint {
+export interface ContainerPoint {
   timestamp: string;
   cpu_percent: number;
-  mem_used_gb: number;
-  mem_total_gb: number;
-  disk_used_gb: number;
-  disk_total_gb: number;
+  mem_used_mb: number;
+  mem_limit_mb: number;
 }
 
 export type HistoryRange = '1h' | '6h' | '24h' | '7d';
 
-export function getAgentHistory(token: string, agentId: string, range: HistoryRange) {
-  return request<{ system: SystemPoint[] }>(`/agents/${agentId}/history?range=${range}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getContainerHistory(
+  token: string,
+  agentId: string,
+  name: string,
+  range: HistoryRange,
+) {
+  return request<{ points: ContainerPoint[] }>(
+    `/agents/${agentId}/containers/${encodeURIComponent(name)}/history?range=${range}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
 }
 
 // ── Session ───────────────────────────────────────────────────────────────────
