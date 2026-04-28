@@ -23,10 +23,6 @@ Required:
 ```bash
 AGENT_IDENTITY=my-server-01          # Unique identifier for this agent
 AGENT_TOKEN=agt_abc123...             # Token from server registration
-```
-
-Optional:
-```bash
 SERVER_URL=http://localhost:8080      # Chowkidar server URL
 AGENT_TYPE=docker                     # Agent type (docker, k8s)
 COLLECT_INTERVAL=10s                   # Metrics collection interval
@@ -118,3 +114,4 @@ To add a new agent type:
 1. Create `collect/k8s.go` implementing same `Collector` interface
 2. Update `main.go` switch statement to handle new type
 3. Add required Go dependencies
+
