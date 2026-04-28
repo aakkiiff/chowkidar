@@ -2,9 +2,11 @@ package report
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -32,33 +34,46 @@ func NewReporter(serverURL, token string) *Reporter {
 	}
 }
 
-// Send marshals the report and POSTs it to the server, retrying up to maxRetries
-// times with exponential backoff on network errors.
-func (r *Reporter) Send(metrics *types.Report) error {
+// Send marshals the report and POSTs it. Retries up to maxRetries on network
+// errors with exponential backoff. HTTP-level (4xx/5xx body) errors are not
+// retried — the server received and rejected; burning cycles won't help.
+// Honors ctx so a shutdown during a retry sleep returns immediately.
+func (r *Reporter) Send(ctx context.Context, metrics *types.Report) error {
 	data, err := json.Marshal(metrics)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
 	delay := baseDelay
-	for attempt := range maxRetries + 1 {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			time.Sleep(delay)
+			log.Printf("[report] attempt %d/%d after %v (last: %v)",
+				attempt+1, maxRetries+1, delay, lastErr)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			delay *= 2
 		}
-		if err = r.post(data); err == nil {
+		err = r.post(ctx, data)
+		if err == nil {
 			return nil
 		}
-		// don't retry HTTP-level errors (4xx) — server received and rejected the request
+		lastErr = err
+		// 4xx/5xx with response body — don't retry, surface to caller.
 		if isHTTPError(err) {
 			return err
 		}
 	}
-	return fmt.Errorf("after %d attempts: %w", maxRetries+1, err)
+	return fmt.Errorf("after %d attempts: %w", maxRetries+1, lastErr)
 }
 
-func (r *Reporter) post(data []byte) error {
-	req, err := http.NewRequest(http.MethodPost, r.serverURL+"/api/v1/report", bytes.NewReader(data))
+func (r *Reporter) post(ctx context.Context, data []byte) error {
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, r.serverURL+"/api/v1/report", bytes.NewReader(data),
+	)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

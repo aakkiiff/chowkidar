@@ -123,8 +123,15 @@ func (c *Collector) startTail(parent context.Context, id, name string) {
 			delete(c.active, id)
 			c.mu.Unlock()
 		}()
-		if err := c.tail(ctx, id, name); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("[logs] tail %s: %v", id[:12], err)
+		log.Printf("[logs] tail start %s (%s)", id[:12], name)
+		err := c.tail(ctx, id, name)
+		switch {
+		case err == nil:
+			log.Printf("[logs] tail end %s (%s) — stream closed", id[:12], name)
+		case errors.Is(err, context.Canceled):
+			// container removed or shutdown — quiet
+		default:
+			log.Printf("[logs] tail %s (%s): %v", id[:12], name, err)
 		}
 	}()
 }

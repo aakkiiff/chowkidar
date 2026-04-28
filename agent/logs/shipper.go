@@ -26,8 +26,10 @@ func NewShipper(serverURL, token string, batchMS time.Duration, batchBuf int) *S
 		serverURL: serverURL,
 		token:     token,
 		client: &http.Client{
-			// No overall timeout — POST body can live for seconds between batches.
-			Timeout: 0,
+			// Bound a single POST so a hung server (no FIN/RST) can't pin the
+			// shipper forever and let the collector channel run drop-oldest
+			// indefinitely.
+			Timeout: 30 * time.Second,
 		},
 		batchMS:  batchMS,
 		batchBuf: batchBuf,
@@ -134,7 +136,22 @@ type httpError struct {
 
 func (e *httpError) Error() string { return fmt.Sprintf("server %d: %s", e.code, e.body) }
 
+// isClientError flags responses that would just keep failing on retry.
+// 401 is treated as retryable: the server may have restarted with the same
+// secret, or a token rotation is in flight; backoff is cheap. 408 / 429 are
+// also retryable. Everything else in 4xx (400 bad body, 403 forbidden, 404
+// route gone, etc.) is fatal — burning cycles won't fix it.
 func isClientError(err error) bool {
 	he, ok := err.(*httpError)
-	return ok && he.code >= 400 && he.code < 500
+	if !ok {
+		return false
+	}
+	if he.code < 400 || he.code >= 500 {
+		return false
+	}
+	switch he.code {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+	return true
 }

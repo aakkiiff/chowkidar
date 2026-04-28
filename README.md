@@ -89,3 +89,42 @@ GET    /api/v1/auth/me      # Verify token → username
 ## License
 
 MIT
+
+
+
+
+
+
+
+
+
+
+what if 1 container 1 log per sec
+1 log/sec ≈ 86,400 lines/day. NDJSON ~300 bytes each → ~26 MB/day raw, ~2.6 MB/day gzipped (10x compression).
+
+With current settings:
+
+Active file (100 MB) fills in ~4 days raw
+10 rotations × ~10 MB gzipped = ~100 MB
+But LOG_RETENTION_DAYS=5 kicks in first → caps at 5 days
+Effective state: ~13 MB gzipped + partial active file. Comfortable.
+
+
+what if 10 container 1 log per sec
+10 log/sec ≈ 864,000 lines/day. NDJSON ~300 bytes each → ~260 MB/day raw, ~26 MB/day gzipped (10x compression).
+
+With current settings:
+
+Active file (100 MB) fills in ~4 days raw
+10 rotations × ~10 MB gzipped = ~100 MB
+But LOG_RETENTION_DAYS=5 kicks in first → caps at 5 days
+Effective state: ~13 MB gzipped + partial active file. Comfortable.
+
+
+what if 10 container 10 log per sec
+10 log/sec × 10 containers = 100 log/sec ≈ 8,640,000 lines/day. NDJSON ~300 bytes each → ~2.6 GB/day raw, ~260 MB/day gzipped (10x compression).
+with current settings:
+Active file (100 MB) fills in ~4 hours raw
+10 rotations × ~10 MB gzipped = ~100 MB
+But LOG_RETENTION_DAYS=5 kicks in first → caps at 5 days
+Effective state: ~13 MB gzipped + partial active file. Comfortable.
