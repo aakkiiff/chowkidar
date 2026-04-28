@@ -5,3 +5,5 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+# cap at 50 mb ram suggested
+    mem_limit: 50m

@@ -22,8 +22,8 @@ import (
 const refreshInterval = 10 * time.Second
 
 // perContainerBuffer is the max pending lines per container before drop-oldest
-// kicks in. 512 × ~400B ≈ 200KB/container worst case.
-const perContainerBuffer = 512
+// kicks in. 5120 × ~400B ≈ 2 MB/container worst case; channel total is ×4.
+const perContainerBuffer = 5120
 
 type Line struct {
 	ContainerID   string    `json:"container_id"`
