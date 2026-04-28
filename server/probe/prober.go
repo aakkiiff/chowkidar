@@ -31,6 +31,10 @@ type Prober struct {
 	// distinguish "never observed" (nil) from "currently healthy" (true).
 	mu     sync.Mutex
 	states map[int64]*bool
+	// openIncident[endpointID] = id of the incident row currently held open
+	// for this endpoint. 0 = no open incident. Refreshed lazily — first probe
+	// after server restart picks up any leftover row via LatestOpenIncident.
+	openIncident map[int64]int64
 	// Last NotAfter we fired an SSL-expiring alert for, per endpoint. When the
 	// stored value matches the current cert's NotAfter, we suppress repeat
 	// fires; when it changes (renewal), the suppression resets and a new
@@ -40,11 +44,12 @@ type Prober struct {
 
 func New(st *store.Store, broker *alert.Broker, poster *alert.Poster) *Prober {
 	return &Prober{
-		st:       st,
-		broker:   broker,
-		poster:   poster,
-		states:   map[int64]*bool{},
-		sslFired: map[int64]time.Time{},
+		st:           st,
+		broker:       broker,
+		poster:       poster,
+		states:       map[int64]*bool{},
+		openIncident: map[int64]int64{},
+		sslFired:     map[int64]time.Time{},
 		client: &http.Client{
 			Timeout: requestTO,
 			// Don't auto-follow redirects: many uptime monitors care about
@@ -96,6 +101,7 @@ func (p *Prober) cycle(ctx context.Context) {
 		if _, ok := live[id]; !ok {
 			delete(p.states, id)
 			delete(p.sslFired, id)
+			delete(p.openIncident, id)
 		}
 	}
 	p.mu.Unlock()
@@ -176,6 +182,12 @@ func (p *Prober) record(e store.Endpoint, start time.Time, code, latency int, ok
 		log.Printf("[probe] record %d: %v", e.ID, err)
 	}
 
+	// Always record the incident transition for storage / uptime maths,
+	// regardless of whether alerts are enabled. Alerts only decide whether
+	// to push to the broker + webhook; storage is unconditional so the
+	// historical uptime view remains accurate even after toggling alerts off.
+	p.recordIncidentTransition(e, start, ok, code, errStr)
+
 	rule, err := p.st.GetAlertRule(e.AgentID)
 	if err != nil {
 		return
@@ -187,6 +199,53 @@ func (p *Prober) record(e store.Endpoint, start time.Time, code, latency int, ok
 	// SSL near-expiry alerts.
 	if rule.SslAlertEnabled && certNotAfter != nil {
 		p.detectSslExpiring(e, start, *certNotAfter)
+	}
+}
+
+// recordIncidentTransition writes outage windows to endpoint_incidents:
+// ok→fail opens a new row, fail→fail bumps the open row, fail→ok closes it.
+// Idempotent across server restarts via LatestOpenIncident.
+func (p *Prober) recordIncidentTransition(e store.Endpoint, at time.Time, ok bool, status int, errStr string) {
+	p.mu.Lock()
+	openID, knownOpen := p.openIncident[e.ID]
+	p.mu.Unlock()
+
+	// Lazy re-attach to a leftover open row from a prior process.
+	if !knownOpen {
+		if id, err := p.st.LatestOpenIncident(e.ID); err == nil {
+			openID = id
+			p.mu.Lock()
+			p.openIncident[e.ID] = id
+			p.mu.Unlock()
+		} else if err != sql.ErrNoRows {
+			log.Printf("[probe] latest-open %d: %v", e.ID, err)
+		}
+	}
+
+	switch {
+	case !ok && openID == 0:
+		// First fail — open a fresh row.
+		id, err := p.st.OpenIncident(e.ID, at, status, errStr)
+		if err != nil {
+			log.Printf("[probe] open incident %d: %v", e.ID, err)
+			return
+		}
+		p.mu.Lock()
+		p.openIncident[e.ID] = id
+		p.mu.Unlock()
+	case !ok && openID != 0:
+		// Continued fail — bump the existing row.
+		if err := p.st.BumpIncident(openID, status, errStr); err != nil {
+			log.Printf("[probe] bump incident %d: %v", openID, err)
+		}
+	case ok && openID != 0:
+		// Recovery — close the row.
+		if err := p.st.CloseIncident(e.ID, at); err != nil {
+			log.Printf("[probe] close incident %d: %v", e.ID, err)
+		}
+		p.mu.Lock()
+		delete(p.openIncident, e.ID)
+		p.mu.Unlock()
 	}
 }
 

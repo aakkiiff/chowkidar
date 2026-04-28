@@ -314,6 +314,24 @@ export default function Settings() {
               />
               <span className="settings-hint">10 – 3600. Default 60.</span>
             </label>
+            <label className="form-label">
+              Incident retention (days)
+              <input
+                type="number"
+                className="form-input"
+                min={1}
+                max={365}
+                value={epCfg.incident_retention_days}
+                onChange={e => {
+                  const n = parseInt(e.target.value, 10);
+                  if (Number.isFinite(n)) setEpCfg({ ...epCfg, incident_retention_days: n });
+                  setEpCfgSaved(false);
+                }}
+              />
+              <span className="settings-hint">
+                Outage windows used by uptime % + gantt. 1 – 365. Default 30. Ongoing outages never pruned.
+              </span>
+            </label>
           </div>
         )}
 

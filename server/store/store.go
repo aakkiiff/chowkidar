@@ -149,6 +149,21 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_probes_endpoint_time ON endpoint_probes(endpoint_id, probed_at DESC)`,
 
+		// One row per outage. probe_count + last_* refresh as the same incident
+		// continues. Retention is days-of-history controlled, while the per-probe
+		// table only holds 48h. This is the long-range source of truth for the
+		// uptime gantt + KPI tiles.
+		`CREATE TABLE IF NOT EXISTS endpoint_incidents (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			endpoint_id  INTEGER NOT NULL,
+			started_at   DATETIME NOT NULL,
+			ended_at     DATETIME,
+			last_status  INTEGER,
+			last_error   TEXT,
+			probe_count  INTEGER NOT NULL DEFAULT 1
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_inc_ep_time ON endpoint_incidents(endpoint_id, started_at DESC)`,
+
 		// Named webhook URLs. The name is the human handle referenced when
 		// configuring per-agent alerts later; the URL is where alerts fire.
 		`CREATE TABLE IF NOT EXISTS webhooks (
@@ -723,9 +738,15 @@ func (s *Store) SetAlertSettings(a AlertSettings) error {
 // ── Endpoints ─────────────────────────────────────────────────────────────────
 
 const (
-	settingProbeIntervalSec = "endpoint_probe_interval_seconds"
-	defaultProbeIntervalSec = 60
-	endpointProbeRetention  = 7 * 24 * time.Hour
+	settingProbeIntervalSec   = "endpoint_probe_interval_seconds"
+	settingIncidentRetentionD = "endpoint_incident_retention_days"
+	defaultProbeIntervalSec   = 60
+	// Per-probe rows feed the heartbeat strip + 1h latency chart only.
+	// Fixed 1h window — long-range uptime queries hit endpoint_incidents.
+	endpointProbeRetention = time.Hour
+	// Closed incidents older than this are pruned. Open incidents (ongoing
+	// outages) are never pruned regardless of age.
+	defaultIncidentRetentionDays = 30
 )
 
 type Endpoint struct {
@@ -994,6 +1015,215 @@ func (s *Store) PruneEndpointProbes() error {
 	return err
 }
 
+// ── Endpoint incidents ────────────────────────────────────────────────────────
+
+type EndpointIncident struct {
+	ID          int64      `json:"id"`
+	EndpointID  int64      `json:"endpoint_id"`
+	StartedAt   time.Time  `json:"started_at"`
+	EndedAt     *time.Time `json:"ended_at,omitempty"`
+	LastStatus  int        `json:"last_status"`
+	LastError   string     `json:"last_error,omitempty"`
+	ProbeCount  int        `json:"probe_count"`
+	DurationS   int64      `json:"duration_s"`
+}
+
+// OpenIncident inserts a new ongoing outage row. Caller has already determined
+// (via the prober's transition state machine) that this is a new ok→fail flip.
+func (s *Store) OpenIncident(endpointID int64, at time.Time, status int, errStr string) (int64, error) {
+	res, err := s.db.Exec(
+		`INSERT INTO endpoint_incidents (endpoint_id, started_at, last_status, last_error, probe_count)
+		 VALUES (?, ?, ?, ?, 1)`,
+		endpointID, at.UTC(), status, errStr,
+	)
+	if err != nil {
+		return 0, err
+	}
+	id, _ := res.LastInsertId()
+	return id, nil
+}
+
+// BumpIncident records that the same outage is still ongoing. Called when a
+// fail→fail probe arrives. Refreshes last_status / last_error and increments
+// the probe counter.
+func (s *Store) BumpIncident(id int64, status int, errStr string) error {
+	_, err := s.db.Exec(
+		`UPDATE endpoint_incidents
+		 SET last_status = ?, last_error = ?, probe_count = probe_count + 1
+		 WHERE id = ? AND ended_at IS NULL`,
+		status, errStr, id,
+	)
+	return err
+}
+
+// CloseIncident sets ended_at on the latest open row for the endpoint. No-op
+// if no open row exists (safe for first probe after server restart).
+func (s *Store) CloseIncident(endpointID int64, at time.Time) error {
+	_, err := s.db.Exec(
+		`UPDATE endpoint_incidents
+		 SET ended_at = ?
+		 WHERE id = (
+		   SELECT id FROM endpoint_incidents
+		   WHERE endpoint_id = ? AND ended_at IS NULL
+		   ORDER BY started_at DESC LIMIT 1
+		 )`,
+		at.UTC(), endpointID,
+	)
+	return err
+}
+
+// LatestOpenIncident returns the most recent ongoing incident for an endpoint,
+// or 0 + sql.ErrNoRows if none. Used by the prober on startup to re-attach
+// to a row left open by a previous process.
+func (s *Store) LatestOpenIncident(endpointID int64) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(
+		`SELECT id FROM endpoint_incidents
+		 WHERE endpoint_id = ? AND ended_at IS NULL
+		 ORDER BY started_at DESC LIMIT 1`,
+		endpointID,
+	).Scan(&id)
+	return id, err
+}
+
+// ListIncidents returns rows that overlap [since, now]. Includes ongoing
+// incidents whose started_at is older than `since` so the gantt strip can
+// clamp them at the range edge.
+func (s *Store) ListIncidents(endpointID int64, since time.Time) ([]EndpointIncident, error) {
+	rows, err := s.db.Query(
+		`SELECT id, endpoint_id, started_at, ended_at, last_status, last_error, probe_count
+		 FROM endpoint_incidents
+		 WHERE endpoint_id = ?
+		   AND (ended_at IS NULL OR ended_at >= ?)
+		 ORDER BY started_at DESC`,
+		endpointID, since.UTC(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []EndpointIncident
+	now := time.Now().UTC()
+	for rows.Next() {
+		var inc EndpointIncident
+		var ended sql.NullTime
+		var status sql.NullInt64
+		var errStr sql.NullString
+		if err := rows.Scan(&inc.ID, &inc.EndpointID, &inc.StartedAt, &ended,
+			&status, &errStr, &inc.ProbeCount); err != nil {
+			return nil, err
+		}
+		if ended.Valid {
+			t := ended.Time
+			inc.EndedAt = &t
+			inc.DurationS = int64(t.Sub(inc.StartedAt).Seconds())
+		} else {
+			inc.DurationS = int64(now.Sub(inc.StartedAt).Seconds())
+		}
+		if status.Valid {
+			inc.LastStatus = int(status.Int64)
+		}
+		if errStr.Valid {
+			inc.LastError = errStr.String
+		}
+		out = append(out, inc)
+	}
+	return out, rows.Err()
+}
+
+// UptimeStats summarises uptime % and incident counters over a window. Open
+// incidents are clamped to [start, now] so the math survives ongoing outages.
+type UptimeStats struct {
+	RangeStart    time.Time `json:"range_start"`
+	RangeEnd      time.Time `json:"range_end"`
+	TotalSeconds  int64     `json:"total_seconds"`
+	DownSeconds   int64     `json:"down_seconds"`
+	Percent       float64   `json:"percent"`
+	IncidentCount int       `json:"incident_count"`
+	MTTRSeconds   int64     `json:"mttr_seconds"`
+	LongestSeconds int64    `json:"longest_seconds"`
+}
+
+func (s *Store) ComputeUptime(endpointID int64, start, end time.Time) (UptimeStats, error) {
+	stats := UptimeStats{
+		RangeStart:   start.UTC(),
+		RangeEnd:     end.UTC(),
+		TotalSeconds: int64(end.Sub(start).Seconds()),
+	}
+	if stats.TotalSeconds <= 0 {
+		stats.Percent = 100
+		return stats, nil
+	}
+
+	rows, err := s.db.Query(
+		`SELECT started_at, ended_at FROM endpoint_incidents
+		 WHERE endpoint_id = ?
+		   AND (ended_at IS NULL OR ended_at >= ?)
+		   AND started_at <= ?`,
+		endpointID, start.UTC(), end.UTC(),
+	)
+	if err != nil {
+		return stats, err
+	}
+	defer rows.Close()
+
+	var totalDown, longest, sumClosed int64
+	var closedN int
+	for rows.Next() {
+		var startedAt time.Time
+		var ended sql.NullTime
+		if err := rows.Scan(&startedAt, &ended); err != nil {
+			return stats, err
+		}
+		windowStart := startedAt
+		if windowStart.Before(start) {
+			windowStart = start
+		}
+		var windowEnd time.Time
+		if ended.Valid {
+			windowEnd = ended.Time
+			closedN++
+			d := int64(ended.Time.Sub(startedAt).Seconds())
+			sumClosed += d
+		} else {
+			windowEnd = end
+		}
+		if windowEnd.After(end) {
+			windowEnd = end
+		}
+		seg := int64(windowEnd.Sub(windowStart).Seconds())
+		if seg < 0 {
+			seg = 0
+		}
+		totalDown += seg
+		if seg > longest {
+			longest = seg
+		}
+		stats.IncidentCount++
+	}
+	stats.DownSeconds = totalDown
+	stats.LongestSeconds = longest
+	stats.Percent = 100 * float64(stats.TotalSeconds-totalDown) / float64(stats.TotalSeconds)
+	if closedN > 0 {
+		stats.MTTRSeconds = sumClosed / int64(closedN)
+	}
+	return stats, rows.Err()
+}
+
+// PruneEndpointIncidents drops closed incident rows older than the retention
+// window. Open incidents (ended_at IS NULL) are kept regardless.
+func (s *Store) PruneEndpointIncidents() error {
+	days := s.getAppSettingInt(settingIncidentRetentionD, defaultIncidentRetentionDays)
+	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	_, err := s.db.Exec(
+		`DELETE FROM endpoint_incidents
+		 WHERE ended_at IS NOT NULL AND ended_at < ?`,
+		cutoff.UTC(),
+	)
+	return err
+}
+
 // ProbeInterval returns the global polling cadence.
 func (s *Store) ProbeInterval() time.Duration {
 	return time.Duration(s.getAppSettingInt(settingProbeIntervalSec, defaultProbeIntervalSec)) * time.Second
@@ -1001,12 +1231,16 @@ func (s *Store) ProbeInterval() time.Duration {
 
 func (s *Store) GetEndpointSettings() map[string]int {
 	return map[string]int{
-		"probe_interval_seconds": s.getAppSettingInt(settingProbeIntervalSec, defaultProbeIntervalSec),
+		"probe_interval_seconds":  s.getAppSettingInt(settingProbeIntervalSec, defaultProbeIntervalSec),
+		"incident_retention_days": s.getAppSettingInt(settingIncidentRetentionD, defaultIncidentRetentionDays),
 	}
 }
 
-func (s *Store) SetEndpointSettings(intervalSeconds int) error {
-	return s.setAppSetting(settingProbeIntervalSec, strconv.Itoa(intervalSeconds))
+func (s *Store) SetEndpointSettings(intervalSeconds, incidentRetentionDays int) error {
+	if err := s.setAppSetting(settingProbeIntervalSec, strconv.Itoa(intervalSeconds)); err != nil {
+		return err
+	}
+	return s.setAppSetting(settingIncidentRetentionD, strconv.Itoa(incidentRetentionDays))
 }
 
 // ── Alert rules ───────────────────────────────────────────────────────────────

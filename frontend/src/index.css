@@ -2136,3 +2136,103 @@ input[type="number"]::-webkit-outer-spin-button {
   .endpoint-stat-val { font-size: 13px; }
   .heartbeat { height: 22px; gap: 1px; }
 }
+
+/* Endpoint detail page: KPI strip + gantt + latency mini */
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 16px 0 20px;
+}
+.kpi-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.kpi-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.kpi-val {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.gantt-wrap {
+  width: 100%;
+  margin: 8px 0 4px;
+}
+.gantt-svg {
+  width: 100%;
+  height: 36px;
+  display: block;
+}
+.gantt-up   { fill: var(--ok); opacity: 0.85; }
+.gantt-down { fill: var(--err); }
+.gantt-ongoing { animation: gantt-pulse 1.6s ease-in-out infinite; }
+@keyframes gantt-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+.gantt-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.latency-chart { width: 100%; margin-top: 8px; }
+.latency-mini {
+  width: 100%;
+  height: 220px;
+  display: block;
+  overflow: visible;
+}
+.latency-mini-line {
+  stroke: var(--info);
+  stroke-width: 1.5;
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+.latency-pt-ok { fill: var(--info); }
+.latency-pt-fail {
+  fill: var(--err);
+  stroke: var(--panel);
+  stroke-width: 1;
+}
+.lat-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.6;
+}
+.lat-axis {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.lat-tick {
+  font-size: 11px;
+  fill: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.lat-axis-label {
+  font-size: 10px;
+  fill: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+@media (max-width: 560px) {
+  .kpi-strip { grid-template-columns: repeat(2, 1fr); }
+  .kpi-val { font-size: 18px; }
+}

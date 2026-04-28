@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/technonext/chowkidar/server/store"
 )
@@ -181,13 +182,93 @@ func (h *Handler) EndpointProbes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, probes)
 }
 
+// EndpointIncidents returns outage windows for an endpoint within the last
+// N minutes (default 24 h, capped at 30 d). Powers the uptime gantt strip
+// + incident table on the endpoint detail page.
+func (h *Handler) EndpointIncidents(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid id"})
+		return
+	}
+	minutes := parseRangeMinutes(r.URL.Query().Get("range"), 24*60, 30*24*60)
+	since := time.Now().Add(-time.Duration(minutes) * time.Minute)
+	out, err := h.store.ListIncidents(id, since)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to list incidents"})
+		return
+	}
+	if out == nil {
+		out = []store.EndpointIncident{}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// EndpointUptime returns the uptime % + downtime totals over a window.
+func (h *Handler) EndpointUptime(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid id"})
+		return
+	}
+	minutes := parseRangeMinutes(r.URL.Query().Get("range"), 24*60, 30*24*60)
+	end := time.Now()
+	start := end.Add(-time.Duration(minutes) * time.Minute)
+	stats, err := h.store.ComputeUptime(id, start, end)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to compute uptime"})
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// parseRangeMinutes accepts integer minutes or the shorthand 1h/1d/7d/10d/30d.
+// Falls back to fallback on parse failure; caps at maxMinutes.
+func parseRangeMinutes(raw string, fallback, maxMinutes int) int {
+	if raw == "" {
+		return fallback
+	}
+	if n, err := strconv.Atoi(raw); err == nil {
+		if n <= 0 {
+			return fallback
+		}
+		if n > maxMinutes {
+			return maxMinutes
+		}
+		return n
+	}
+	multipliers := map[byte]int{
+		'm': 1,
+		'h': 60,
+		'd': 60 * 24,
+	}
+	if len(raw) < 2 {
+		return fallback
+	}
+	suffix := raw[len(raw)-1]
+	mul, ok := multipliers[suffix]
+	if !ok {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw[:len(raw)-1])
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	res := n * mul
+	if res > maxMinutes {
+		res = maxMinutes
+	}
+	return res
+}
+
 func (h *Handler) GetEndpointSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.store.GetEndpointSettings())
 }
 
 func (h *Handler) SetEndpointSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProbeIntervalSeconds int `json:"probe_interval_seconds"`
+		ProbeIntervalSeconds  int `json:"probe_interval_seconds"`
+		IncidentRetentionDays int `json:"incident_retention_days"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
@@ -197,7 +278,11 @@ func (h *Handler) SetEndpointSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"probe_interval_seconds must be between 10 and 3600"})
 		return
 	}
-	if err := h.store.SetEndpointSettings(req.ProbeIntervalSeconds); err != nil {
+	if req.IncidentRetentionDays < 1 || req.IncidentRetentionDays > 365 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"incident_retention_days must be between 1 and 365"})
+		return
+	}
+	if err := h.store.SetEndpointSettings(req.ProbeIntervalSeconds, req.IncidentRetentionDays); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to save"})
 		return
 	}

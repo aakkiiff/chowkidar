@@ -450,6 +450,40 @@ export interface EndpointProbe {
   cert_not_after?: string | null;
 }
 
+export interface EndpointIncident {
+  id: number;
+  endpoint_id: number;
+  started_at: string;
+  ended_at?: string;       // omitted on ongoing incidents
+  last_status: number;
+  last_error?: string;
+  probe_count: number;
+  duration_s: number;       // seconds; for ongoing rows == elapsed since start
+}
+
+export interface UptimeStats {
+  range_start: string;
+  range_end: string;
+  total_seconds: number;
+  down_seconds: number;
+  percent: number;
+  incident_count: number;
+  mttr_seconds: number;
+  longest_seconds: number;
+}
+
+export function getEndpointIncidents(token: string, id: number, range: string) {
+  return request<EndpointIncident[]>(`/endpoints/${id}/incidents?range=${range}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export function getEndpointUptime(token: string, id: number, range: string) {
+  return request<UptimeStats>(`/endpoints/${id}/uptime?range=${range}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 export function listEndpoints(token: string, agentId: string) {
   return request<Endpoint[]>(`/agents/${agentId}/endpoints`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -503,6 +537,7 @@ export function getEndpointProbes(token: string, id: number, minutes: number) {
 
 export interface EndpointSettings {
   probe_interval_seconds: number;
+  incident_retention_days: number;
 }
 
 export function getEndpointSettings(token: string) {

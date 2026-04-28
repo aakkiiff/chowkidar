@@ -79,6 +79,9 @@ func main() {
 				if err := db.PruneEndpointProbes(); err != nil {
 					log.Printf("probe prune: %v", err)
 				}
+				if err := db.PruneEndpointIncidents(); err != nil {
+					log.Printf("incident prune: %v", err)
+				}
 			}
 		}
 	}()

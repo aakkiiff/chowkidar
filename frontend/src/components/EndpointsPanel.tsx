@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   listEndpoints,
   createEndpoint,
@@ -60,6 +61,7 @@ function fmtCertAge(notAfter: string | null | undefined): { text: string; classN
 }
 
 export default function EndpointsPanel({ token, agentId, onExpired }: Props) {
+  const navigate = useNavigate();
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [history, setHistory] = useState<Record<number, EndpointProbe[]>>({});
   const [loading, setLoading] = useState(true);
@@ -201,6 +203,14 @@ export default function EndpointsPanel({ token, agentId, onExpired }: Props) {
                     </div>
                     <div className="endpoint-meta">
                       <span className={`ctr-status ${status.className}`}>{status.text}</span>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => navigate(`/agents/${agentId}/endpoints/${e.id}`)}
+                        aria-label={`View details for ${e.name}`}
+                      >
+                        Details
+                      </button>
                       <button
                         type="button"
                         className="btn-secondary"

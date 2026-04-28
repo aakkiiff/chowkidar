@@ -34,6 +34,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/endpoints/{id}/alert", h.requireAdmin(h.SetEndpointAlert))
 	mux.HandleFunc("DELETE /api/v1/endpoints/{id}", h.requireAdmin(h.DeleteEndpoint))
 	mux.HandleFunc("GET /api/v1/endpoints/{id}/probes", h.requireAdmin(h.EndpointProbes))
+	mux.HandleFunc("GET /api/v1/endpoints/{id}/incidents", h.requireAdmin(h.EndpointIncidents))
+	mux.HandleFunc("GET /api/v1/endpoints/{id}/uptime", h.requireAdmin(h.EndpointUptime))
 	mux.HandleFunc("GET /api/v1/settings/endpoints", h.requireAdmin(h.GetEndpointSettings))
 	mux.HandleFunc("PUT /api/v1/settings/endpoints", h.requireAdmin(h.SetEndpointSettings))
 

@@ -4,6 +4,7 @@ import Protected from './pages/Protected';
 import Layout from './pages/Layout';
 import AgentsList from './pages/AgentsList';
 import AgentDetailPage from './pages/AgentDetailPage';
+import EndpointDetailPage from './pages/EndpointDetailPage';
 import Settings from './pages/Settings';
 
 export default function App() {
@@ -18,6 +19,7 @@ export default function App() {
             <Route path="/agents" element={<AgentsList />} />
             <Route path="/agents/:id" element={<Navigate to="overview" replace />} />
             <Route path="/agents/:id/:tab" element={<AgentDetailPage />} />
+            <Route path="/agents/:id/endpoints/:eid" element={<EndpointDetailPage />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/agents" replace />} />
           </Route>
