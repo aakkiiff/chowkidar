@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -18,33 +20,46 @@ type Config struct {
 	LogMaxRotations         int
 }
 
-func Load() *Config {
-	return &Config{
-		Port:                    getEnv("SERVER_PORT", "8080"),
-		JWTSecret:               getEnv("JWT_SECRET", "chowkidar-dev-secret"),
-		DBPath:                  getEnv("DB_PATH", "./db/chowkidar.db"),
-		AdminUser:               getEnv("ADMIN_USERNAME", "admin"),
-		AdminPass:               getEnv("ADMIN_PASSWORD", "changeme"),
-		RetentionDaysContainers: getEnvInt("RETENTION_DAYS_CONTAINERS", 7),
-		LogDir:                  getEnv("LOG_DIR", "./db/logs"),
-		LogRetentionDays:        getEnvInt("LOG_RETENTION_DAYS", 3),
-		LogMaxFileMB:            getEnvInt("LOG_MAX_FILE_MB", 100),
-		LogMaxRotations:         getEnvInt("LOG_MAX_ROTATIONS", 10),
-	}
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
+// Load reads every required env var. Missing or invalid values fail fast —
+// no silent defaults. Caller is expected to have loaded .env first.
+func Load() (*Config, error) {
+	var missing []string
+	get := func(key string) string {
+		v := strings.TrimSpace(os.Getenv(key))
+		if v == "" {
+			missing = append(missing, key)
+		}
 		return v
 	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil && i > 0 {
-			return i
+	getInt := func(key string) int {
+		v := strings.TrimSpace(os.Getenv(key))
+		if v == "" {
+			missing = append(missing, key)
+			return 0
 		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			missing = append(missing, key+" (must be positive integer)")
+			return 0
+		}
+		return n
 	}
-	return fallback
+
+	cfg := &Config{
+		Port:                    get("SERVER_PORT"),
+		JWTSecret:               get("JWT_SECRET"),
+		DBPath:                  get("DB_PATH"),
+		AdminUser:               get("ADMIN_USERNAME"),
+		AdminPass:               get("ADMIN_PASSWORD"),
+		RetentionDaysContainers: getInt("RETENTION_DAYS_CONTAINERS"),
+		LogDir:                  get("LOG_DIR"),
+		LogRetentionDays:        getInt("LOG_RETENTION_DAYS"),
+		LogMaxFileMB:            getInt("LOG_MAX_FILE_MB"),
+		LogMaxRotations:         getInt("LOG_MAX_ROTATIONS"),
+	}
+
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
+	}
+	return cfg, nil
 }

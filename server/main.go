@@ -26,7 +26,10 @@ import (
 func main() {
 	loadDotenv()
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
 
 	db, err := store.New(cfg.DBPath)
 	if err != nil {
@@ -171,8 +174,8 @@ func main() {
 //   2. ./.env          (cwd — docker compose with workdir)
 //   3. ./server/.env   (running `go run ./server` from repo root)
 //   4. <binary dir>/.env  (installed binary alongside its config)
-// First hit wins. Silent on miss — env vars from the process environment
-// still take precedence and the app has sensible defaults either way.
+// First hit wins. Fails fast if none load AND env vars aren't already
+// present in the process environment (docker `env_file` injection path).
 func loadDotenv() {
 	candidates := []string{}
 	if v := os.Getenv("CHOWKIDAR_ENV"); v != "" {
@@ -191,4 +194,11 @@ func loadDotenv() {
 			return
 		}
 	}
+	// No .env file found. Allow continuation only if the docker `env_file`
+	// path already populated process env with our required vars; config.Load
+	// will otherwise fail fast with the missing-key list.
+	if os.Getenv("ADMIN_USERNAME") == "" {
+		log.Fatalf("no .env file found in any candidate location and no env vars set; tried: %v", candidates)
+	}
+	log.Printf("no .env file found; relying on process environment")
 }
