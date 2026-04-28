@@ -38,8 +38,9 @@ function severityOf(l: LogLine): Severity {
 interface Entry extends LogLine {
   id: string;
   // true while rendered for the first time from the live stream. Drives the
-  // 4s CSS flash; flipped false by a one-shot timer so the class drops off.
+  // 4s CSS flash; cleared by a single interval sweeper, not per-line timers.
   fresh: boolean;
+  freshAt?: number;
 }
 
 interface Props {
@@ -106,6 +107,25 @@ function LogPanelImpl({ token, agentId, containerName, onExpired }: Props) {
   useEffect(() => {
     if (!live) return;
 
+    // Single sweeper drops the `fresh` flag off entries older than the flash
+    // window. Replaces the per-line setTimeout pile-up that leaked timers on
+    // bursty streams + unmount.
+    const FRESH_MS = 5000;
+    const sweeper = setInterval(() => {
+      const cutoff = Date.now() - FRESH_MS;
+      setEntries(prev => {
+        let mutated = false;
+        const next = prev.map(e => {
+          if (e.fresh && e.freshAt != null && e.freshAt < cutoff) {
+            mutated = true;
+            return { ...e, fresh: false };
+          }
+          return e;
+        });
+        return mutated ? next : prev;
+      });
+    }, 1000);
+
     const ctrl = streamLogs(
       token,
       agentId,
@@ -113,22 +133,11 @@ function LogPanelImpl({ token, agentId, containerName, onExpired }: Props) {
       500,
       line => {
         const id = nextId();
-        const entry: Entry = { ...line, id, fresh: true };
+        const entry: Entry = { ...line, id, fresh: true, freshAt: Date.now() };
         setEntries(prev => {
           const next = [entry, ...prev];
           return next.length > MAX_LINES ? next.slice(0, MAX_LINES) : next;
         });
-        // Flip off the flash class after the CSS animation ends so the DOM
-        // doesn't hold a meaningless class forever. One timeout per line.
-        setTimeout(() => {
-          setEntries(prev => {
-            const i = prev.findIndex(e => e.id === id);
-            if (i < 0 || !prev[i].fresh) return prev;
-            const copy = prev.slice();
-            copy[i] = { ...copy[i], fresh: false };
-            return copy;
-          });
-        }, 5000);
       },
       err => {
         if (err instanceof Error && err.message === 'Session expired') {
@@ -140,7 +149,10 @@ function LogPanelImpl({ token, agentId, containerName, onExpired }: Props) {
       },
     );
 
-    return () => ctrl.abort();
+    return () => {
+      ctrl.abort();
+      clearInterval(sweeper);
+    };
   }, [live, token, agentId, containerName, onExpired]);
 
   const visible = useMemo(() => {
