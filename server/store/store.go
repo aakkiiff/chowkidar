@@ -480,6 +480,59 @@ func (s *Store) ValidateToken(tokenHash string) (string, error) {
 	return id, nil
 }
 
+// activeIssueCount returns a quick tally of things currently wrong for an agent:
+// stopped containers + open endpoint incidents + containers breaching enabled thresholds.
+// Agent-offline (+1) is added by the caller which already has last_seen.
+func (s *Store) activeIssueCount(agentID string) int {
+	total := 0
+
+	// Stopped containers in the latest snapshot.
+	var stopped int
+	s.db.QueryRow(`
+		SELECT COUNT(*) FROM container_metrics
+		WHERE agent_id = ? AND timestamp = (
+			SELECT MAX(timestamp) FROM container_metrics WHERE agent_id = ?
+		) AND status != 'running'
+	`, agentID, agentID).Scan(&stopped)
+	total += stopped
+
+	// Open endpoint incidents.
+	var openInc int
+	s.db.QueryRow(`
+		SELECT COUNT(DISTINCT e.id) FROM endpoints e
+		JOIN endpoint_incidents i ON i.endpoint_id = e.id
+		WHERE e.agent_id = ? AND i.ended_at IS NULL
+	`, agentID).Scan(&openInc)
+	total += openInc
+
+	// Containers over CPU threshold (only if rule is enabled).
+	var ctrCPU int
+	s.db.QueryRow(`
+		SELECT COUNT(*) FROM container_metrics cm
+		JOIN alert_rules ar ON ar.agent_id = cm.agent_id
+		WHERE cm.agent_id = ?
+		  AND cm.timestamp = (SELECT MAX(timestamp) FROM container_metrics WHERE cm.agent_id = ?)
+		  AND ar.ctr_cpu_enabled = 1
+		  AND (cm.cpu_percent * 10) > ar.ctr_cpu_threshold_mcore
+	`, agentID, agentID).Scan(&ctrCPU)
+	total += ctrCPU
+
+	// Containers over mem threshold (only if rule is enabled).
+	var ctrMem int
+	s.db.QueryRow(`
+		SELECT COUNT(*) FROM container_metrics cm
+		JOIN alert_rules ar ON ar.agent_id = cm.agent_id
+		WHERE cm.agent_id = ?
+		  AND cm.timestamp = (SELECT MAX(timestamp) FROM container_metrics WHERE cm.agent_id = ?)
+		  AND ar.ctr_mem_enabled = 1
+		  AND cm.mem_limit_mb > 0
+		  AND (cm.mem_used_mb / cm.mem_limit_mb * 100) > ar.ctr_mem_threshold
+	`, agentID, agentID).Scan(&ctrMem)
+	total += ctrMem
+
+	return total
+}
+
 // ListAgentsWithMetrics returns agents with embedded metrics. Pass nil to
 // return all agents (admin); pass a slice to filter to those IDs (developer).
 func (s *Store) ListAgentsWithMetrics(allowed []string) ([]AgentWithMetrics, error) {
@@ -510,6 +563,10 @@ func (s *Store) ListAgentsWithMetrics(allowed []string) ([]AgentWithMetrics, err
 		a.AlertsEnabled = enabled != 0
 		a.System, _ = s.latestSystemMetrics(a.ID)
 		a.ContainerCount, _ = s.latestContainerCount(a.ID)
+		a.ActiveIssues = s.activeIssueCount(a.ID)
+		if a.LastSeen != nil && time.Since(*a.LastSeen) > 35*time.Second {
+			a.ActiveIssues++
+		}
 		agents = append(agents, a)
 	}
 	return agents, rows.Err()
@@ -529,6 +586,10 @@ func (s *Store) GetAgentWithMetrics(id string) (AgentWithMetrics, error) {
 	a.AlertsEnabled = enabled != 0
 	a.System, _ = s.latestSystemMetrics(a.ID)
 	a.ContainerCount, _ = s.latestContainerCount(a.ID)
+	a.ActiveIssues = s.activeIssueCount(a.ID)
+	if a.LastSeen != nil && time.Since(*a.LastSeen) > 35*time.Second {
+		a.ActiveIssues++
+	}
 	return a, nil
 }
 
@@ -1656,6 +1717,7 @@ type AgentWithMetrics struct {
 	System         *SystemMetrics
 	ContainerCount int
 	AlertsEnabled  bool
+	ActiveIssues   int `json:"active_issues"`
 }
 
 type SystemMetrics struct {

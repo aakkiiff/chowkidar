@@ -212,6 +212,7 @@ type agentResponse struct {
 	DiskTotalGB    *float64 `json:"disk_total_gb"`
 	ContainerCount int      `json:"container_count"`
 	AlertsEnabled  bool     `json:"alerts_enabled"`
+	ActiveIssues   int      `json:"active_issues"`
 }
 
 func toAgentResponse(a store.AgentWithMetrics) agentResponse {
@@ -226,6 +227,7 @@ func toAgentResponse(a store.AgentWithMetrics) agentResponse {
 		LastSeen:       lastSeen,
 		ContainerCount: a.ContainerCount,
 		AlertsEnabled:  a.AlertsEnabled,
+		ActiveIssues:   a.ActiveIssues,
 	}
 	if a.System != nil {
 		ar.CPUPercent = &a.System.CPUPercent

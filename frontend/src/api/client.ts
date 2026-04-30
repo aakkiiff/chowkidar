@@ -139,6 +139,7 @@ export interface Agent {
   disk_total_gb: number | null;
   container_count: number;
   alerts_enabled: boolean;
+  active_issues: number;
 }
 
 export function listAgents(token: string) {

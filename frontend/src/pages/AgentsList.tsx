@@ -127,6 +127,7 @@ export default function AgentsList() {
               const diskPct = pct(agent.disk_used_gb, agent.disk_total_gb);
               const hasMetrics = agent.cpu_percent != null;
               const alertsOn = agent.alerts_enabled;
+              const issues = agent.active_issues ?? 0;
               return (
                 <div
                   key={agent.id}
@@ -144,6 +145,11 @@ export default function AgentsList() {
                   <div className="agent-card-header">
                     <span className="agent-hostname">{agent.hostname}</span>
                     <div className="agent-card-header-right">
+                      {issues > 0 && (
+                        <span className="issue-badge" title={`${issues} active issue${issues !== 1 ? 's' : ''}`}>
+                          {issues}
+                        </span>
+                      )}
                       <span
                         className={`alert-bell${alertsOn ? ' on' : ''}`}
                         aria-label={alertsOn ? 'Alerts enabled' : 'Alerts disabled'}
