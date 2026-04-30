@@ -31,9 +31,10 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		Username string   `json:"username"`
+		Password string   `json:"password"`
+		Role     string   `json:"role"`
+		AgentIDs []string `json:"agent_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
@@ -65,6 +66,13 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to create user"})
 		return
+	}
+	if req.Role == "developer" && len(req.AgentIDs) > 0 {
+		if err := h.store.SetUserAgentPerms(u.ID, req.AgentIDs); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"user created but failed to set agent permissions"})
+			return
+		}
+		u.AgentIDs = req.AgentIDs
 	}
 	writeJSON(w, http.StatusOK, u)
 }
@@ -125,6 +133,27 @@ func (h *Handler) SetUserPassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to set password"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetUserAgents replaces the set of agents a developer can see.
+func (h *Handler) SetUserAgents(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid id"})
+		return
+	}
+	var req struct {
+		AgentIDs []string `json:"agent_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
+		return
+	}
+	if err := h.store.SetUserAgentPerms(id, req.AgentIDs); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to save permissions"})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

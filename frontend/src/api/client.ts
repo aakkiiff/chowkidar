@@ -43,6 +43,7 @@ export interface AppUser {
   id: number;
   username: string;
   role: Role;
+  agent_ids?: string[];
   created_at: string;
 }
 
@@ -52,11 +53,11 @@ export function listUsers(token: string) {
   });
 }
 
-export function createUser(token: string, username: string, password: string, role: Role) {
+export function createUser(token: string, username: string, password: string, role: Role, agentIds?: string[]) {
   return request<AppUser>('/users', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ username, password, role }),
+    body: JSON.stringify({ username, password, role, agent_ids: agentIds }),
   });
 }
 
@@ -80,6 +81,22 @@ export async function setUserPassword(token: string, id: number, password: strin
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ password }),
+  });
+  if (res.status === 401) {
+    clearSession();
+    throw new Error('Session expired');
+  }
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Update failed');
+  }
+}
+
+export async function setUserAgents(token: string, userId: number, agentIds: string[]): Promise<void> {
+  const res = await fetch(`${API_BASE}/users/${userId}/agents`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ agent_ids: agentIds }),
   });
   if (res.status === 401) {
     clearSession();

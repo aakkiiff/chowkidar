@@ -203,6 +203,15 @@ func (s *Store) migrate() error {
 			webhook_id              INTEGER,
 			updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+
+			// Per-agent read permissions for developer users.
+			`CREATE TABLE IF NOT EXISTS user_agent_perms (
+				user_id  INTEGER NOT NULL,
+				agent_id TEXT    NOT NULL,
+				PRIMARY KEY (user_id, agent_id),
+				FOREIGN KEY (user_id)  REFERENCES users(id)  ON DELETE CASCADE,
+				FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+			)`,
 	}
 
 	for _, stmt := range stmts {
@@ -236,6 +245,11 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migrate alter: %w", err)
 		}
 	}
+		// Grant existing developers access to all existing agents so they don't
+		// lose visibility on upgrade. Safe to re-run (INSERT OR IGNORE).
+		s.db.Exec(`INSERT OR IGNORE INTO user_agent_perms (user_id, agent_id)
+			SELECT u.id, a.id FROM users u CROSS JOIN agents a WHERE u.role = 'developer'`)
+
 	return nil
 }
 
@@ -266,6 +280,7 @@ type AppUser struct {
 	ID        int64     `json:"id"`
 	Username  string    `json:"username"`
 	Role      string    `json:"role"`
+	AgentIDs  []string  `json:"agent_ids,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -280,6 +295,9 @@ func (s *Store) ListUsers() ([]AppUser, error) {
 		var u AppUser
 		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt); err != nil {
 			return nil, err
+		}
+		if u.Role == "developer" {
+			u.AgentIDs, _ = s.GetUserAgentPerms(u.ID)
 		}
 		out = append(out, u)
 	}
@@ -327,6 +345,54 @@ func (s *Store) UpdateUserPassword(id int64, hashedPassword string) error {
 	}
 	return nil
 }
+
+	// SetUserAgentPerms replaces the set of agent IDs a developer can see.
+	// Pass an empty slice to revoke all access.
+	func (s *Store) SetUserAgentPerms(userID int64, agentIDs []string) error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`DELETE FROM user_agent_perms WHERE user_id = ?`, userID); err != nil {
+			return err
+		}
+		for _, aid := range agentIDs {
+			if _, err := tx.Exec(`INSERT INTO user_agent_perms (user_id, agent_id) VALUES (?, ?)`, userID, aid); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	}
+
+	// GetUserAgentPerms returns the agent IDs a developer has access to.
+	func (s *Store) GetUserAgentPerms(userID int64) ([]string, error) {
+		rows, err := s.db.Query(`SELECT agent_id FROM user_agent_perms WHERE user_id = ?`, userID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		return ids, rows.Err()
+	}
+
+	// UserCanSeeAgent checks whether a developer has access to a specific agent.
+	func (s *Store) UserCanSeeAgent(userID int64, agentID string) (bool, error) {
+		var n int
+		err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM user_agent_perms WHERE user_id = ? AND agent_id = ?`,
+			userID, agentID,
+		).Scan(&n)
+		return n > 0, err
+	}
+
 
 // ── Agents ────────────────────────────────────────────────────────────────────
 
@@ -414,12 +480,21 @@ func (s *Store) ValidateToken(tokenHash string) (string, error) {
 	return id, nil
 }
 
-// ListAgentsWithMetrics returns all agents with their latest system metrics
-// and current container count embedded — one query per agent for simplicity.
-func (s *Store) ListAgentsWithMetrics() ([]AgentWithMetrics, error) {
-	rows, err := s.db.Query(
-		`SELECT id, hostname, last_seen, alerts_enabled FROM agents ORDER BY last_seen DESC`,
-	)
+// ListAgentsWithMetrics returns agents with embedded metrics. Pass nil to
+// return all agents (admin); pass a slice to filter to those IDs (developer).
+func (s *Store) ListAgentsWithMetrics(allowed []string) ([]AgentWithMetrics, error) {
+	q := `SELECT id, hostname, last_seen, alerts_enabled FROM agents`
+	var args []any
+	if allowed != nil {
+		ph := make([]string, len(allowed))
+		for i, id := range allowed {
+			ph[i] = "?"
+			args = append(args, id)
+		}
+		q += ` WHERE id IN (` + strings.Join(ph, ",") + `)`
+	}
+	q += ` ORDER BY last_seen DESC`
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}

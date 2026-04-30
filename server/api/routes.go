@@ -53,6 +53,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/users", h.requireAdmin(h.CreateUser))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", h.requireAdmin(h.DeleteUser))
 	mux.HandleFunc("PUT /api/v1/users/{id}/password", h.requireAdmin(h.SetUserPassword))
+	mux.HandleFunc("PUT /api/v1/users/{id}/agents", h.requireAdmin(h.SetUserAgents))
 
 	// Agent reporting — bearer token (not JWT).
 	mux.HandleFunc("POST /api/v1/report", h.Report)

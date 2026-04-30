@@ -113,7 +113,11 @@ export default function AgentsList() {
         {loading ? (
           <div className="dash-loading">Loading agents…</div>
         ) : agents.length === 0 ? (
-          <div className="dash-empty">No agents registered. Click "Add Agent" to get started.</div>
+          <div className="dash-empty">
+            {isAdmin
+              ? 'No agents registered. Click "Add Agent" to get started.'
+              : 'No agents assigned to your account. Contact an administrator.'}
+          </div>
         ) : (
           <div className="agents-grid">
             {agents.map(agent => {

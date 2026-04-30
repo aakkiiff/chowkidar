@@ -48,6 +48,10 @@ func (h *Handler) IngestLogs(w http.ResponseWriter, r *http.Request) {
 // mode is off — the client polls explicitly via Refresh.
 func (h *Handler) RecentLogs(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("id")
+	if !h.canSeeAgent(r, agentID) {
+		writeJSON(w, http.StatusNotFound, errorResponse{"agent not found"})
+		return
+	}
 	name := r.PathValue("name")
 
 	minutes := 5
@@ -84,6 +88,10 @@ func (h *Handler) RecentLogs(w http.ResponseWriter, r *http.Request) {
 // client disconnects.
 func (h *Handler) TailLogs(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("id")
+	if !h.canSeeAgent(r, agentID) {
+		writeJSON(w, http.StatusNotFound, errorResponse{"agent not found"})
+		return
+	}
 	name := r.PathValue("name")
 
 	n := 100

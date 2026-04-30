@@ -237,10 +237,45 @@ func toAgentResponse(a store.AgentWithMetrics) agentResponse {
 	return ar
 }
 
+// canSeeAgent returns true for admins (always) or developers with a matching
+// permission row. Returns false on any lookup error — fail-closed.
+func (h *Handler) canSeeAgent(r *http.Request, agentID string) bool {
+	role, _ := r.Context().Value(ctxKeyRole).(string)
+	if role == RoleAdmin {
+		return true
+	}
+	username, _ := r.Context().Value(ctxKeyUsername).(string)
+	userID, _, _, err := h.store.GetUser(username)
+	if err != nil {
+		return false
+	}
+	ok, _ := h.store.UserCanSeeAgent(int64(userID), agentID)
+	return ok
+}
+
+// userAllowedAgents returns the agent IDs a developer can see, or nil for admins.
+func (h *Handler) userAllowedAgents(r *http.Request) ([]string, error) {
+	role, _ := r.Context().Value(ctxKeyRole).(string)
+	if role == RoleAdmin {
+		return nil, nil
+	}
+	username, _ := r.Context().Value(ctxKeyUsername).(string)
+	userID, _, _, err := h.store.GetUser(username)
+	if err != nil {
+		return nil, err
+	}
+	return h.store.GetUserAgentPerms(int64(userID))
+}
+
 // ListAgents returns all agents with their latest system metrics and container
 // count embedded so the dashboard can render cards in a single request.
 func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
-	agents, err := h.store.ListAgentsWithMetrics()
+	allowed, err := h.userAllowedAgents(r)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to resolve permissions"})
+		return
+	}
+	agents, err := h.store.ListAgentsWithMetrics(allowed)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to list agents"})
 		return
@@ -258,6 +293,10 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"id required"})
+		return
+	}
+	if !h.canSeeAgent(r, id) {
+		writeJSON(w, http.StatusNotFound, errorResponse{"agent not found"})
 		return
 	}
 	a, err := h.store.GetAgentWithMetrics(id)
@@ -327,6 +366,10 @@ func (h *Handler) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 // CPU% descending (mirrors the output of `docker stats`).
 func (h *Handler) AgentContainers(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !h.canSeeAgent(r, id) {
+		writeJSON(w, http.StatusNotFound, errorResponse{"agent not found"})
+		return
+	}
 	containers, err := h.store.GetLatestContainers(id)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to fetch containers"})
@@ -342,6 +385,10 @@ func (h *Handler) AgentContainers(w http.ResponseWriter, r *http.Request) {
 // over the requested time range. Supported ranges: 1h, 6h, 24h, 7d (default 1h).
 func (h *Handler) ContainerHistory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !h.canSeeAgent(r, id) {
+		writeJSON(w, http.StatusNotFound, errorResponse{"agent not found"})
+		return
+	}
 	name := r.PathValue("name")
 	since := time.Now().Add(-parseRange(r.URL.Query().Get("range")))
 

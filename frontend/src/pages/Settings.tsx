@@ -11,8 +11,11 @@ import {
   listUsers,
   createUser,
   deleteUser,
+  setUserAgents,
+  listAgents,
   type AlertSettings,
   type AppUser,
+  type Agent,
   type EndpointSettings,
   type Role,
   type Webhook,
@@ -21,8 +24,6 @@ import {
 import ThemeToggle from '../components/ThemeToggle';
 import type { AuthCtx } from './Protected';
 
-// Keep this list in sync with the server's supportedWebhookTypes map +
-// alert.formatters. Adding a provider is a 3-file change.
 const WEBHOOK_TYPES: { value: WebhookType; label: string }[] = [
   { value: 'discord', label: 'Discord' },
 ];
@@ -36,7 +37,7 @@ export default function Settings() {
 
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
-  const [type, setType] = useState<WebhookType>('discord');
+  const [wtype, setWtype] = useState<WebhookType>('discord');
   const [saving, setSaving] = useState(false);
 
   // Global alert timing.
@@ -49,12 +50,21 @@ export default function Settings() {
 
   // User management (admin only).
   const [users, setUsers] = useState<AppUser[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [usersLoading, setUsersLoading] = useState(true);
   const [newUserName, setNewUserName] = useState('');
   const [newUserPass, setNewUserPass] = useState('');
   const [newUserRole, setNewUserRole] = useState<Role>('developer');
+  const [newUserAgentIds, setNewUserAgentIds] = useState<string[]>([]);
   const [creatingUser, setCreatingUser] = useState(false);
   const [userErr, setUserErr] = useState<string | null>(null);
+
+  // Edit-access modal for developer permissions.
+  const [editingUser, setEditingUser] = useState<AppUser | null>(null);
+  const [editingAgentIds, setEditingAgentIds] = useState<string[]>([]);
+  const [editingSaving, setEditingSaving] = useState(false);
+  const [editingSaved, setEditingSaved] = useState(false);
+  const editSavedTimer = useRef<number | null>(null);
 
   // Endpoint monitoring (probe interval).
   const [epCfg, setEpCfg] = useState<EndpointSettings | null>(null);
@@ -66,18 +76,17 @@ export default function Settings() {
 
   const load = useCallback(async () => {
     if (!isAdmin) {
-      // Developers don't have access to admin config endpoints — skip
-      // fetching them so the page doesn't 403-spam the console.
       setLoading(false);
       setUsersLoading(false);
       return;
     }
     try {
-      const [hooks, settings, epSettings, userList] = await Promise.all([
+      const [hooks, settings, epSettings, userList, agentList] = await Promise.all([
         listWebhooks(token),
         getAlertSettings(token),
         getEndpointSettings(token),
         listUsers(token).catch(() => [] as AppUser[]),
+        listAgents(token).catch(() => [] as Agent[]),
       ]);
       setWebhooks(hooks ?? []);
       setAlertCfg(settings);
@@ -85,6 +94,7 @@ export default function Settings() {
       setEpCfg(epSettings);
       setEpCfgPristine(epSettings);
       setUsers(userList ?? []);
+      setAgents(agentList ?? []);
     } catch (err) {
       if (err instanceof Error && err.message === 'Session expired') {
         onExpired();
@@ -159,11 +169,11 @@ export default function Settings() {
     setError(null);
     setSaving(true);
     try {
-      const hook = await createWebhook(token, name.trim(), url.trim(), type);
+      const hook = await createWebhook(token, name.trim(), url.trim(), wtype);
       setWebhooks(prev => [...prev, hook].sort((a, b) => a.name.localeCompare(b.name)));
       setName('');
       setUrl('');
-      setType('discord');
+      setWtype('discord');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'save failed');
     } finally {
@@ -184,6 +194,34 @@ export default function Settings() {
       setError(err instanceof Error ? err.message : 'delete failed');
     }
   };
+
+  const toggleAgent = (agentId: string, list: string[], setList: (v: string[]) => void) => {
+    setList(list.includes(agentId) ? list.filter(id => id !== agentId) : [...list, agentId]);
+  };
+
+  const saveEditAccess = async () => {
+    if (!editingUser) return;
+    setEditingSaving(true);
+    try {
+      await setUserAgents(token, editingUser.id, editingAgentIds);
+      setUsers(prev => prev.map(u =>
+        u.id === editingUser.id ? { ...u, agent_ids: editingAgentIds } : u
+      ));
+      setEditingSaved(true);
+      if (editSavedTimer.current != null) window.clearTimeout(editSavedTimer.current);
+      editSavedTimer.current = window.setTimeout(() => {
+        setEditingSaved(false);
+        setEditingUser(null);
+      }, 900);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Session expired') { onExpired(); return; }
+      setUserErr(err instanceof Error ? err.message : 'save failed');
+    } finally {
+      setEditingSaving(false);
+    }
+  };
+
+  const agentName = (id: string) => agents.find(a => a.id === id)?.hostname ?? id.slice(0, 12);
 
   return (
     <main className="dash-main">
@@ -363,8 +401,8 @@ export default function Settings() {
         <form className="webhook-form" onSubmit={handleCreate}>
           <select
             className="form-input"
-            value={type}
-            onChange={e => setType(e.target.value as WebhookType)}
+            value={wtype}
+            onChange={e => setWtype(e.target.value as WebhookType)}
             aria-label="Webhook type"
           >
             {WEBHOOK_TYPES.map(t => (
@@ -440,20 +478,21 @@ export default function Settings() {
         <h3 className="settings-block-title">Users</h3>
         <p className="settings-hint">
           Admins have full access to every page. Developers can only browse the
-          agents list and an agent's overview tab — they can't edit alerts,
-          endpoints, webhooks, or other users.
+          agents they are assigned to — they can't edit alerts, endpoints,
+          webhooks, or other users.
         </p>
 
         <form
-          className="webhook-form"
+          className="user-form"
           onSubmit={async e => {
             e.preventDefault();
             setUserErr(null);
             setCreatingUser(true);
             try {
-              const u = await createUser(token, newUserName.trim(), newUserPass, newUserRole);
+              const ids = newUserRole === 'developer' ? newUserAgentIds : undefined;
+              const u = await createUser(token, newUserName.trim(), newUserPass, newUserRole, ids);
               setUsers(prev => [...prev, u]);
-              setNewUserName(''); setNewUserPass(''); setNewUserRole('developer');
+              setNewUserName(''); setNewUserPass(''); setNewUserRole('developer'); setNewUserAgentIds([]);
             } catch (err) {
               setUserErr(err instanceof Error ? err.message : 'create failed');
             } finally {
@@ -461,36 +500,66 @@ export default function Settings() {
             }
           }}
         >
-          <input
-            type="text"
-            className="form-input"
-            placeholder="Username"
-            value={newUserName}
-            onChange={e => setNewUserName(e.target.value)}
-            maxLength={64}
-            required
-          />
-          <input
-            type="password"
-            className="form-input"
-            placeholder="Password (≥6 chars)"
-            value={newUserPass}
-            onChange={e => setNewUserPass(e.target.value)}
-            minLength={6}
-            required
-          />
-          <select
-            className="form-input"
-            value={newUserRole}
-            onChange={e => setNewUserRole(e.target.value as Role)}
-            aria-label="Role"
-          >
-            <option value="developer">Developer</option>
-            <option value="admin">Admin</option>
-          </select>
-          <button type="submit" className="btn-primary" disabled={creatingUser}>
-            {creatingUser ? 'Creating…' : 'Add user'}
-          </button>
+          <div className="user-form-row">
+            <input
+              type="text"
+              className="form-input"
+              placeholder="Username"
+              value={newUserName}
+              onChange={e => setNewUserName(e.target.value)}
+              maxLength={64}
+              required
+            />
+            <input
+              type="password"
+              className="form-input"
+              placeholder="Password (≥6 chars)"
+              value={newUserPass}
+              onChange={e => setNewUserPass(e.target.value)}
+              minLength={6}
+              required
+            />
+            <select
+              className="form-input"
+              value={newUserRole}
+              onChange={e => {
+                setNewUserRole(e.target.value as Role);
+                if (e.target.value === 'admin') setNewUserAgentIds([]);
+              }}
+              aria-label="Role"
+            >
+              <option value="developer">Developer</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button type="submit" className="btn-primary" disabled={creatingUser}>
+              {creatingUser ? 'Creating…' : 'Add user'}
+            </button>
+          </div>
+
+          {newUserRole === 'developer' && (
+            <div className="agent-access-picker">
+              <div className="agent-access-picker-title">
+                Agent access
+                {newUserAgentIds.length > 0 && ` · ${newUserAgentIds.length} selected`}
+              </div>
+              {agents.length === 0 ? (
+                <span className="settings-hint" style={{ marginBottom: 0 }}>No agents registered yet — you can assign access later.</span>
+              ) : (
+                <div className="agent-access-picker-grid">
+                  {agents.map(a => (
+                    <label key={a.id} className={`agent-chip${newUserAgentIds.includes(a.id) ? ' selected' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={newUserAgentIds.includes(a.id)}
+                        onChange={() => toggleAgent(a.id, newUserAgentIds, setNewUserAgentIds)}
+                      />
+                      {a.hostname}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </form>
 
         {userErr && <div className="login-error">{userErr}</div>}
@@ -506,6 +575,7 @@ export default function Settings() {
                 <tr>
                   <th scope="col">Username</th>
                   <th scope="col">Role</th>
+                  <th scope="col">Agents</th>
                   <th scope="col">Created</th>
                   <th scope="col" />
                 </tr>
@@ -519,8 +589,33 @@ export default function Settings() {
                       <td>
                         <span className="webhook-type-badge">{u.role}</span>
                       </td>
+                      <td style={{ maxWidth: 240 }}>
+                        {u.role === 'developer'
+                          ? (u.agent_ids?.length ?? 0) > 0
+                            ? <div className="agent-tag-list">
+                                {u.agent_ids!.map(id => (
+                                  <span key={id} className="agent-tag">{agentName(id)}</span>
+                                ))}
+                              </div>
+                            : <span className="td-muted" style={{ opacity: 0.5 }}>No access</span>
+                          : <span className="td-muted">—</span>
+                        }
+                      </td>
                       <td className="td-muted mono">{new Date(u.created_at).toLocaleDateString()}</td>
-                      <td style={{ textAlign: 'right' }}>
+                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {u.role === 'developer' && !isSelf && (
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ marginRight: 6 }}
+                            onClick={() => {
+                              setEditingUser(u);
+                              setEditingAgentIds(u.agent_ids ?? []);
+                            }}
+                          >
+                            Edit access
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="btn-secondary"
@@ -549,6 +644,53 @@ export default function Settings() {
           </div>
         )}
       </section>
+
+      {/* Edit agent access modal */}
+      {editingUser && (
+        <div className="modal-overlay" onClick={() => !editingSaving && setEditingUser(null)}>
+          <div className="modal" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+            <div className="modal-title">Agent access — {editingUser.username}</div>
+            <p className="modal-text">Select which agents this developer can view.</p>
+
+            {agents.length === 0 ? (
+              <p className="modal-text">No agents registered yet.</p>
+            ) : (
+              <div className="agent-access-picker" style={{ marginBottom: 4 }}>
+                <div className="agent-access-picker-title">
+                  Agents
+                  {editingAgentIds.length > 0 && ` · ${editingAgentIds.length} selected`}
+                </div>
+                <div className="agent-access-picker-grid">
+                  {agents.map(a => (
+                    <label key={a.id} className={`agent-chip${editingAgentIds.includes(a.id) ? ' selected' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={editingAgentIds.includes(a.id)}
+                        onChange={() => toggleAgent(a.id, editingAgentIds, setEditingAgentIds)}
+                      />
+                      {a.hostname}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="modal-actions">
+              <button type="button" className="btn-secondary" onClick={() => setEditingUser(null)} disabled={editingSaving}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={editingSaving}
+                onClick={saveEditAccess}
+              >
+                {editingSaving ? 'Saving…' : editingSaved ? 'Saved' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </>
       )}
     </div>
