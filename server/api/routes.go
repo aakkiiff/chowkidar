@@ -11,6 +11,7 @@ func (h *Handler) Routes() http.Handler {
 
 	// Auth + read-only views available to every signed-in user.
 	mux.HandleFunc("GET /api/v1/auth/me", h.requireJWT(h.Me))
+	mux.HandleFunc("POST /api/v1/auth/password", h.requireJWT(h.ChangeOwnPassword))
 	mux.HandleFunc("GET /api/v1/agents", h.requireJWT(h.ListAgents))
 	mux.HandleFunc("GET /api/v1/agents/{id}", h.requireJWT(h.GetAgent))
 	mux.HandleFunc("GET /api/v1/agents/{id}/containers", h.requireJWT(h.AgentContainers))

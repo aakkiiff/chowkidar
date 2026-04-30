@@ -92,6 +92,23 @@ export async function setUserPassword(token: string, id: number, password: strin
   }
 }
 
+export async function changeOwnPassword(token: string, currentPassword: string, newPassword: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/auth/password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (res.status === 401) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    // 401 from this endpoint means wrong current password, not session expiry
+    throw new Error(body.error || 'Unauthorized');
+  }
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Update failed');
+  }
+}
+
 export async function setUserAgents(token: string, userId: number, agentIds: string[]): Promise<void> {
   const res = await fetch(`${API_BASE}/users/${userId}/agents`, {
     method: 'PUT',

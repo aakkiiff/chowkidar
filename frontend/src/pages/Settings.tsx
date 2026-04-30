@@ -12,6 +12,7 @@ import {
   createUser,
   deleteUser,
   setUserAgents,
+  changeOwnPassword,
   listAgents,
   type AlertSettings,
   type AppUser,
@@ -65,6 +66,33 @@ export default function Settings() {
   const [editingSaving, setEditingSaving] = useState(false);
   const [editingSaved, setEditingSaved] = useState(false);
   const editSavedTimer = useRef<number | null>(null);
+
+  // Change own password.
+  const [pwCurrent, setPwCurrent] = useState('');
+  const [pwNew, setPwNew] = useState('');
+  const [pwConfirm, setPwConfirm] = useState('');
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwErr, setPwErr] = useState<string | null>(null);
+  const [pwSaved, setPwSaved] = useState(false);
+  const pwSavedTimer = useRef<number | null>(null);
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwErr(null);
+    if (pwNew !== pwConfirm) { setPwErr('Passwords do not match'); return; }
+    setPwSaving(true);
+    try {
+      await changeOwnPassword(token, pwCurrent, pwNew);
+      setPwCurrent(''); setPwNew(''); setPwConfirm('');
+      setPwSaved(true);
+      if (pwSavedTimer.current != null) window.clearTimeout(pwSavedTimer.current);
+      pwSavedTimer.current = window.setTimeout(() => setPwSaved(false), 2500);
+    } catch (err) {
+      setPwErr(err instanceof Error ? err.message : 'failed');
+    } finally {
+      setPwSaving(false);
+    }
+  };
 
   // Endpoint monitoring (probe interval).
   const [epCfg, setEpCfg] = useState<EndpointSettings | null>(null);
@@ -236,16 +264,6 @@ export default function Settings() {
         <ThemeToggle />
       </section>
 
-      {!isAdmin && (
-        <section className="settings-block" style={{ marginBottom: 16 }}>
-          <h3 className="settings-block-title">Account</h3>
-          <p className="settings-hint">
-            Signed in as <strong>{username}</strong> · role <code>{role}</code>.
-            Other settings (webhooks, alert timing, endpoint monitoring, users)
-            are restricted to administrators.
-          </p>
-        </section>
-      )}
 
       {isAdmin && (
       <>
@@ -693,6 +711,60 @@ export default function Settings() {
       )}
       </>
       )}
+      <section className="settings-block" style={{ marginTop: 16 }}>
+        <details>
+          <summary style={{ cursor: 'pointer', fontSize: 14, fontWeight: 600, color: 'var(--text-strong)', userSelect: 'none' }}>
+            Change password
+          </summary>
+          <p className="settings-hint" style={{ marginTop: 8 }}>
+            Signed in as <strong>{username}</strong>. Enter your current password to set a new one.
+          </p>
+          <form onSubmit={handleChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 360 }}>
+            <label className="form-label">
+              Current password
+              <input
+                type="password"
+                className="form-input"
+                value={pwCurrent}
+                onChange={e => setPwCurrent(e.target.value)}
+                required
+                autoComplete="current-password"
+              />
+            </label>
+            <label className="form-label">
+              New password
+              <input
+                type="password"
+                className="form-input"
+                value={pwNew}
+                onChange={e => setPwNew(e.target.value)}
+                minLength={6}
+                required
+                autoComplete="new-password"
+              />
+            </label>
+            <label className="form-label">
+              Confirm new password
+              <input
+                type="password"
+                className="form-input"
+                value={pwConfirm}
+                onChange={e => setPwConfirm(e.target.value)}
+                minLength={6}
+                required
+                autoComplete="new-password"
+              />
+            </label>
+            {pwErr && <div className="login-error">{pwErr}</div>}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <button type="submit" className="btn-primary" disabled={pwSaving}>
+                {pwSaving ? 'Saving…' : 'Change password'}
+              </button>
+              {pwSaved && <span className="alert-rule-saved">Password updated</span>}
+            </div>
+          </form>
+        </details>
+      </section>
     </div>
     </main>
   );

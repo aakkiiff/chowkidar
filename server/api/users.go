@@ -138,6 +138,47 @@ func (h *Handler) SetUserPassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ChangeOwnPassword lets any authenticated user change their own password.
+// Requires the current password for verification.
+func (h *Handler) ChangeOwnPassword(w http.ResponseWriter, r *http.Request) {
+	username, _ := r.Context().Value(ctxKeyUsername).(string)
+	var req struct {
+		Current string `json:"current_password"`
+		New     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
+		return
+	}
+	if len(req.New) < 6 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"new password must be ≥6 chars"})
+		return
+	}
+	if req.Current == req.New {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"new password must differ from current"})
+		return
+	}
+	id, hashedPassword, _, err := h.store.GetUser(username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to load user"})
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(req.Current)); err != nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"current password is incorrect"})
+		return
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(req.New), bcrypt.DefaultCost)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"hash failed"})
+		return
+	}
+	if err := h.store.UpdateUserPassword(int64(id), string(newHash)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to update password"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // SetUserAgents replaces the set of agents a developer can see.
 func (h *Handler) SetUserAgents(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
