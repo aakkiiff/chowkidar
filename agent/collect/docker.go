@@ -45,10 +45,10 @@ func (d *DockerCollector) Client() *client.Client { return d.cli }
 
 // Collect lists all containers and fetches their metrics concurrently.
 func (d *DockerCollector) Collect() ([]types.ContainerMetrics, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	listCtx, listCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer listCancel()
 
-	containers, err := d.cli.ContainerList(ctx, container.ListOptions{All: true})
+	containers, err := d.cli.ContainerList(listCtx, container.ListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
@@ -73,9 +73,13 @@ func (d *DockerCollector) Collect() ([]types.ContainerMetrics, error) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			// Per-container timeout: slow/zombie containers don't block others.
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+
 			m, err := d.collectOne(ctx, id, name, image, status)
 			if err != nil {
-				log.Printf("[docker] %s: %v", id[:12], err)
+				log.Printf("[docker] %s: stats: %v", id[:12], err)
 				return
 			}
 

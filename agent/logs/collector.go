@@ -119,19 +119,39 @@ func (c *Collector) startTail(parent context.Context, id, name string) {
 
 	go func() {
 		defer func() {
+			cancel()
 			c.mu.Lock()
 			delete(c.active, id)
 			c.mu.Unlock()
 		}()
-		log.Printf("[logs] tail start %s (%s)", id[:12], name)
-		err := c.tail(ctx, id, name)
-		switch {
-		case err == nil:
-			log.Printf("[logs] tail end %s (%s) — stream closed", id[:12], name)
-		case errors.Is(err, context.Canceled):
-			// container removed or shutdown — quiet
-		default:
-			log.Printf("[logs] tail %s (%s): %v", id[:12], name, err)
+
+		backoff := 10 * time.Second
+		const maxBackoff = 5 * time.Minute
+		for {
+			log.Printf("[logs] tail start %s (%s)", id[:12], name)
+			err := c.tail(ctx, id, name)
+			switch {
+			case errors.Is(err, context.Canceled):
+				return // container removed or shutdown — stop quietly
+			case err == nil:
+				// Stream closed cleanly (e.g. non-follow logging driver).
+				// Retry with backoff instead of tight-looping.
+				log.Printf("[logs] tail end %s (%s) — stream closed, retry in %s", id[:12], name, backoff)
+			default:
+				log.Printf("[logs] tail %s (%s): %v — retry in %s", id[:12], name, err, backoff)
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
 		}
 	}()
 }
