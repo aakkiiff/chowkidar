@@ -50,6 +50,10 @@ func (h *Handler) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"url required"})
 		return
 	}
+	if len(rawURL) > 2048 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"url too long (max 2048)"})
+		return
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"url must be a valid http(s) URL"})
@@ -88,6 +92,10 @@ func (h *Handler) UpdateEndpoint(w http.ResponseWriter, r *http.Request) {
 	rawURL := strings.TrimSpace(req.URL)
 	if rawURL == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"url required"})
+		return
+	}
+	if len(rawURL) > 2048 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"url too long (max 2048)"})
 		return
 	}
 	u, err := url.Parse(rawURL)

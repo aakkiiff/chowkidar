@@ -80,6 +80,15 @@ func (p *Prober) Run(ctx context.Context) {
 	}
 }
 
+// agentInfo bundles the per-agent data needed for alert dispatch, built once
+// per cycle to avoid repeated DB lookups inside the concurrent probe workers.
+type agentInfo struct {
+	hostname    string
+	webhookURL  string
+	webhookType string
+	rule        store.AlertRule
+}
+
 // cycle probes all endpoints concurrently with a small worker pool.
 func (p *Prober) cycle(ctx context.Context) {
 	endpoints, err := p.st.AllEndpoints()
@@ -106,6 +115,9 @@ func (p *Prober) cycle(ctx context.Context) {
 	}
 	p.mu.Unlock()
 
+	// Build per-cycle agent cache: 3 queries total regardless of endpoint count.
+	cache := p.buildAgentCache()
+
 	const workers = 8
 	jobs := make(chan store.Endpoint)
 	var wg sync.WaitGroup
@@ -114,7 +126,7 @@ func (p *Prober) cycle(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for e := range jobs {
-				p.probeOne(ctx, e)
+				p.probeOne(ctx, e, cache)
 			}
 		}()
 	}
@@ -131,13 +143,50 @@ func (p *Prober) cycle(ctx context.Context) {
 	wg.Wait()
 }
 
-func (p *Prober) probeOne(ctx context.Context, e store.Endpoint) {
+// buildAgentCache fetches hostnames, alert rules, and webhooks in 3 queries
+// and returns a map keyed by agentID.
+func (p *Prober) buildAgentCache() map[string]agentInfo {
+	hostnames, err := p.st.ListAgentHostnames()
+	if err != nil {
+		log.Printf("[probe] cache hostnames: %v", err)
+		hostnames = map[string]string{}
+	}
+	rules, err := p.st.ListAlertRules()
+	if err != nil {
+		log.Printf("[probe] cache rules: %v", err)
+		rules = map[string]store.AlertRule{}
+	}
+	webhooks, err := p.st.ListWebhooks()
+	if err != nil {
+		log.Printf("[probe] cache webhooks: %v", err)
+	}
+	webhookByID := map[int64]store.Webhook{}
+	for _, w := range webhooks {
+		webhookByID[w.ID] = w
+	}
+
+	cache := map[string]agentInfo{}
+	for id, hostname := range hostnames {
+		rule := rules[id]
+		info := agentInfo{hostname: hostname, rule: rule}
+		if rule.WebhookID != nil {
+			if w, ok := webhookByID[*rule.WebhookID]; ok {
+				info.webhookURL = w.URL
+				info.webhookType = w.Type
+			}
+		}
+		cache[id] = info
+	}
+	return cache
+}
+
+func (p *Prober) probeOne(ctx context.Context, e store.Endpoint, cache map[string]agentInfo) {
 	reqCtx, cancel := context.WithTimeout(ctx, requestTO)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, e.URL, nil)
 	if err != nil {
-		p.record(e, time.Now(), 0, 0, false, err.Error(), nil)
+		p.record(e, time.Now(), 0, 0, false, err.Error(), nil, cache)
 		return
 	}
 	req.Header.Set("User-Agent", "chowkidar-probe/1")
@@ -146,7 +195,7 @@ func (p *Prober) probeOne(ctx context.Context, e store.Endpoint) {
 	resp, err := p.client.Do(req)
 	if err != nil {
 		latency := int(time.Since(start) / time.Millisecond)
-		p.record(e, start, 0, latency, false, err.Error(), nil)
+		p.record(e, start, 0, latency, false, err.Error(), nil, cache)
 		return
 	}
 	io.CopyN(io.Discard, resp.Body, 64*1024)
@@ -166,10 +215,10 @@ func (p *Prober) probeOne(ctx context.Context, e store.Endpoint) {
 		na := resp.TLS.PeerCertificates[0].NotAfter
 		notAfter = &na
 	}
-	p.record(e, start, resp.StatusCode, latency, ok, errStr, notAfter)
+	p.record(e, start, resp.StatusCode, latency, ok, errStr, notAfter, cache)
 }
 
-func (p *Prober) record(e store.Endpoint, start time.Time, code, latency int, ok bool, errStr string, certNotAfter *time.Time) {
+func (p *Prober) record(e store.Endpoint, start time.Time, code, latency int, ok bool, errStr string, certNotAfter *time.Time, cache map[string]agentInfo) {
 	if err := p.st.RecordProbe(store.EndpointProbe{
 		EndpointID:   e.ID,
 		ProbedAt:     start,
@@ -188,17 +237,14 @@ func (p *Prober) record(e store.Endpoint, start time.Time, code, latency int, ok
 	// historical uptime view remains accurate even after toggling alerts off.
 	p.recordIncidentTransition(e, start, ok, code, errStr)
 
-	rule, err := p.st.GetAlertRule(e.AgentID)
-	if err != nil {
-		return
-	}
+	info := cache[e.AgentID]
 	// Endpoint up/down alerts.
-	if rule.EndpointDownEnabled {
-		p.detectTransition(e, start, ok, errStr)
+	if info.rule.EndpointDownEnabled {
+		p.detectTransition(e, start, ok, errStr, info)
 	}
 	// SSL near-expiry alerts.
-	if rule.SslAlertEnabled && certNotAfter != nil {
-		p.detectSslExpiring(e, start, *certNotAfter)
+	if info.rule.SslAlertEnabled && certNotAfter != nil {
+		p.detectSslExpiring(e, start, *certNotAfter, info)
 	}
 }
 
@@ -252,7 +298,7 @@ func (p *Prober) recordIncidentTransition(e store.Endpoint, at time.Time, ok boo
 // detectTransition fires breach/resolve when the up/down state flips for an
 // endpoint with alerts enabled. First observation is silent — avoids a flood
 // of "down" alerts on server startup.
-func (p *Prober) detectTransition(e store.Endpoint, at time.Time, ok bool, errStr string) {
+func (p *Prober) detectTransition(e store.Endpoint, at time.Time, ok bool, errStr string, info agentInfo) {
 	p.mu.Lock()
 	prev := p.states[e.ID]
 	current := ok
@@ -266,10 +312,9 @@ func (p *Prober) detectTransition(e store.Endpoint, at time.Time, ok bool, errSt
 		return // no transition
 	}
 
-	hostname, webhookURL, webhookType := p.lookupAgent(e.AgentID)
 	evt := alert.Event{
 		AgentID:      e.AgentID,
-		Hostname:     hostname,
+		Hostname:     info.hostname,
 		Metric:       alert.MetricEndpointDown,
 		EndpointName: e.Name,
 		EndpointURL:  e.URL,
@@ -286,8 +331,8 @@ func (p *Prober) detectTransition(e store.Endpoint, at time.Time, ok bool, errSt
 	if p.broker != nil {
 		p.broker.Publish(evt)
 	}
-	if webhookURL != "" && webhookType != "" {
-		go p.poster.Send(webhookURL, webhookType, evt)
+	if info.webhookURL != "" && info.webhookType != "" {
+		go p.poster.Send(info.webhookURL, info.webhookType, evt)
 	}
 }
 
@@ -295,7 +340,7 @@ func (p *Prober) detectTransition(e store.Endpoint, at time.Time, ok bool, errSt
 // warning window, and again as "resolved" when a renewal moves NotAfter back
 // outside the window. Suppressed re-fires for the same NotAfter timestamp so
 // repeated probes don't flood the channel.
-func (p *Prober) detectSslExpiring(e store.Endpoint, at time.Time, notAfter time.Time) {
+func (p *Prober) detectSslExpiring(e store.Endpoint, at time.Time, notAfter time.Time, info agentInfo) {
 	threshold := time.Duration(sslWarnThresholdD) * 24 * time.Hour
 	expiringSoon := notAfter.Sub(at) <= threshold
 
@@ -312,22 +357,21 @@ func (p *Prober) detectSslExpiring(e store.Endpoint, at time.Time, notAfter time
 		p.mu.Lock()
 		p.sslFired[e.ID] = notAfter
 		p.mu.Unlock()
-		p.emitSsl(e, at, notAfter, alert.PhaseFired)
+		p.emitSsl(e, at, notAfter, alert.PhaseFired, info)
 	case !expiringSoon && !lastFiredFor.IsZero() && !lastFiredFor.Equal(notAfter):
 		// Cert was renewed — emit resolved + clear suppression.
 		p.mu.Lock()
 		delete(p.sslFired, e.ID)
 		p.mu.Unlock()
-		p.emitSsl(e, at, notAfter, alert.PhaseResolved)
+		p.emitSsl(e, at, notAfter, alert.PhaseResolved, info)
 	}
 }
 
-func (p *Prober) emitSsl(e store.Endpoint, at, notAfter time.Time, phase string) {
-	hostname, webhookURL, webhookType := p.lookupAgent(e.AgentID)
+func (p *Prober) emitSsl(e store.Endpoint, at, notAfter time.Time, phase string, info agentInfo) {
 	daysLeft := int(notAfter.Sub(at) / (24 * time.Hour))
 	evt := alert.Event{
 		AgentID:      e.AgentID,
-		Hostname:     hostname,
+		Hostname:     info.hostname,
 		Metric:       alert.MetricSslExpiring,
 		EndpointName: e.Name,
 		EndpointURL:  e.URL,
@@ -340,8 +384,8 @@ func (p *Prober) emitSsl(e store.Endpoint, at, notAfter time.Time, phase string)
 	if p.broker != nil {
 		p.broker.Publish(evt)
 	}
-	if webhookURL != "" && webhookType != "" {
-		go p.poster.Send(webhookURL, webhookType, evt)
+	if info.webhookURL != "" && info.webhookType != "" {
+		go p.poster.Send(info.webhookURL, info.webhookType, evt)
 	}
 }
 

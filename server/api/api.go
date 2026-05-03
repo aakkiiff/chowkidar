@@ -43,9 +43,8 @@ func ValidateToken(tokenStr, secret string) (*Claims, error) {
 		return nil, err
 	}
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
-		// Default any pre-role token to admin so existing sessions don't lose access.
-		if claims.Role == "" {
-			claims.Role = RoleAdmin
+		if claims.Role != RoleAdmin && claims.Role != RoleDeveloper {
+			return nil, fmt.Errorf("invalid role claim")
 		}
 		return claims, nil
 	}

@@ -47,6 +47,7 @@ export default function AgentsList() {
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pollError, setPollError] = useState(false);
 
   const [showRegister, setShowRegister] = useState(false);
   const [newHostname, setNewHostname] = useState('');
@@ -56,22 +57,33 @@ export default function AgentsList() {
   const [newAgent, setNewAgent] = useState<{ agent_id: string; token: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const pollDelay = useCallback((hadError: boolean) => hadError ? 30_000 : 10_000, []);
+
   const loadAgents = useCallback(async () => {
     try {
       const data = await listAgents(token);
       setAgents(data ?? []);
+      setPollError(false);
     } catch (err) {
-      if (err instanceof Error && err.message === 'Session expired') onLogout();
+      if (err instanceof Error && err.message === 'Session expired') { onLogout(); return; }
+      setPollError(true);
     } finally {
       setLoading(false);
     }
   }, [token, onLogout]);
 
   useEffect(() => {
+    let id: ReturnType<typeof setTimeout>;
+    const schedule = (error: boolean) => {
+      id = setTimeout(async () => {
+        await loadAgents();
+        schedule(pollError);
+      }, pollDelay(error));
+    };
     loadAgents();
-    const id = setInterval(loadAgents, 10_000);
-    return () => clearInterval(id);
-  }, [loadAgents]);
+    schedule(false);
+    return () => clearTimeout(id);
+  }, [loadAgents, pollDelay, pollError]);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();

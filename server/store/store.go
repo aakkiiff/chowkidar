@@ -593,6 +593,80 @@ func (s *Store) GetAgentWithMetrics(id string) (AgentWithMetrics, error) {
 	return a, nil
 }
 
+// ListAgentHostnames returns id→hostname for every agent. Used by the prober
+// to build a per-cycle cache without fetching full metrics.
+func (s *Store) ListAgentHostnames() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT id, hostname FROM agents`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, hostname string
+		if err := rows.Scan(&id, &hostname); err != nil {
+			return nil, err
+		}
+		out[id] = hostname
+	}
+	return out, rows.Err()
+}
+
+// ListAlertRules returns all alert rules keyed by agent_id. Missing rules use
+// the default (all disabled). Used by the prober to batch the per-cycle lookup.
+func (s *Store) ListAlertRules() (map[string]AlertRule, error) {
+	rows, err := s.db.Query(`
+		SELECT agent_id,
+		       cpu_enabled, cpu_threshold,
+		       mem_enabled, mem_threshold,
+		       disk_enabled, disk_threshold,
+		       ctr_down_enabled,
+		       ctr_cpu_enabled, ctr_cpu_threshold_mcore,
+		       ctr_mem_enabled, ctr_mem_threshold,
+		       endpoint_down_enabled,
+		       ssl_alert_enabled,
+		       agent_down_enabled,
+		       webhook_id
+		FROM alert_rules`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]AlertRule{}
+	for rows.Next() {
+		var r AlertRule
+		var cpuE, memE, diskE, ctrDownE, ctrCPUE, ctrMemE, epDownE, agentDownE, sslE int
+		var webhookID sql.NullInt64
+		if err := rows.Scan(&r.AgentID,
+			&cpuE, &r.CPUThreshold,
+			&memE, &r.MemThreshold,
+			&diskE, &r.DiskThreshold,
+			&ctrDownE,
+			&ctrCPUE, &r.CtrCPUThresholdMCore,
+			&ctrMemE, &r.CtrMemThreshold,
+			&epDownE, &sslE, &agentDownE,
+			&webhookID,
+		); err != nil {
+			return nil, err
+		}
+		r.CPUEnabled = cpuE != 0
+		r.MemEnabled = memE != 0
+		r.DiskEnabled = diskE != 0
+		r.CtrDownEnabled = ctrDownE != 0
+		r.CtrCPUEnabled = ctrCPUE != 0
+		r.CtrMemEnabled = ctrMemE != 0
+		r.EndpointDownEnabled = epDownE != 0
+		r.SslAlertEnabled = sslE != 0
+		r.AgentDownEnabled = agentDownE != 0
+		if webhookID.Valid {
+			id := webhookID.Int64
+			r.WebhookID = &id
+		}
+		out[r.AgentID] = r
+	}
+	return out, rows.Err()
+}
+
 // SetAgentAlerts toggles the alert flag for an agent. Returns sql.ErrNoRows
 // if the agent does not exist.
 func (s *Store) SetAgentAlerts(id string, enabled bool) error {

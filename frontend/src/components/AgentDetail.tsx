@@ -584,7 +584,7 @@ export default function AgentDetail({
                         </td>
                         <td className="td-muted">{fmtMemPair(c.mem_used_mb, c.mem_limit_mb)}</td>
                         <td>
-                          <span className={`ctr-status ${c.status.toLowerCase().startsWith('up') ? 'up' : 'down'}`}>
+                          <span className={`ctr-status ${c.status.toLowerCase() === 'running' ? 'up' : 'down'}`}>
                             {c.status}
                           </span>
                         </td>

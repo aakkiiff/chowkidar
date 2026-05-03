@@ -82,7 +82,7 @@ func (d *DockerCollector) Collect() ([]types.ContainerMetrics, error) {
 			mu.Lock()
 			results = append(results, m)
 			mu.Unlock()
-		}(c.ID, name, c.Image, c.Status)
+		}(c.ID, name, c.Image, c.State)
 	}
 
 	wg.Wait()

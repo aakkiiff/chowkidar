@@ -61,5 +61,8 @@ func Load() (*Config, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
 	}
+	if len(cfg.JWTSecret) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters")
+	}
 	return cfg, nil
 }

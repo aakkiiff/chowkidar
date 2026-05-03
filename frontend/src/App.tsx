@@ -6,6 +6,7 @@ import AgentsList from './pages/AgentsList';
 import AgentDetailPage from './pages/AgentDetailPage';
 import EndpointDetailPage from './pages/EndpointDetailPage';
 import Settings from './pages/Settings';
+import NotFound from './pages/NotFound';
 
 export default function App() {
   return (
@@ -21,7 +22,7 @@ export default function App() {
             <Route path="/agents/:id/:tab" element={<AgentDetailPage />} />
             <Route path="/agents/:id/endpoints/:eid" element={<EndpointDetailPage />} />
             <Route path="/settings" element={<Settings />} />
-            <Route path="*" element={<Navigate to="/agents" replace />} />
+            <Route path="*" element={<NotFound />} />
           </Route>
         </Route>
       </Routes>
