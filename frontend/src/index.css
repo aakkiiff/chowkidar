@@ -404,6 +404,32 @@ body {
 .btn-secondary:hover:not(:disabled) { border-color: var(--border-hi); background: var(--panel-hover); }
 .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.btn-xs {
+  background: var(--panel-hi);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: var(--r);
+  font-size: 11px;
+  font-family: var(--f-mono);
+  cursor: pointer;
+  transition: border-color var(--t) var(--ease), color var(--t) var(--ease);
+}
+.btn-xs:hover { color: var(--text); border-color: var(--border-hi); }
+.btn-xs.btn-active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+.input-xs {
+  background: var(--panel-hi);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: var(--r);
+  font-size: 11px;
+  font-family: var(--f-mono);
+  outline: none;
+}
+.input-xs:focus { border-color: var(--accent); }
+
 /* Danger variants — ghost for low-emphasis, solid for final confirm */
 .btn-danger {
   color: var(--err);
@@ -1216,11 +1242,14 @@ input[type="number"]::-webkit-outer-spin-button {
   color: var(--muted);
   text-transform: uppercase;
   background: var(--canvas);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  white-space: nowrap;
 }
+.container-table th.th-sort {
+  cursor: pointer;
+  user-select: none;
+}
+.container-table th.th-sort:hover { color: var(--text); }
+.container-table th.th-sort-active { color: var(--text); }
 
 .container-table td {
   padding: 8px 10px;

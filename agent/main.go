@@ -85,6 +85,9 @@ func main() {
 	ticker := time.NewTicker(cfg.CollectInterval)
 	defer ticker.Stop()
 
+	inFlight := make(chan struct{}, 1)
+	inFlight <- struct{}{} // start as available
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -92,19 +95,26 @@ func main() {
 			return
 
 		case <-ticker.C:
-			metrics := collectAll(systemCollector, dockerCollector)
-			metrics.Timestamp = time.Now()
-			metrics.Identity = cfg.Identity
-			// ServerName is the human-readable identity; server may use it as display name
-			metrics.ServerName = cfg.Identity
+			select {
+			case token := <-inFlight:
+				go func(tok struct{}) {
+					defer func() { inFlight <- tok }()
+					metrics := collectAll(systemCollector, dockerCollector)
+					metrics.Timestamp = time.Now()
+					metrics.Identity = cfg.Identity
+					metrics.ServerName = cfg.Identity
 
-			if err := reporter.Send(ctx, metrics); err != nil {
-				log.Printf("[report] send failed: %v", err)
-			} else {
-				log.Printf("[report] ok: cpu=%.1f%% mem=%.1f/%.1fGB containers=%d",
-					metrics.System.CPUPercent,
-					metrics.System.MemUsedGB, metrics.System.MemTotalGB,
-					len(metrics.Containers))
+					if err := reporter.Send(ctx, metrics); err != nil {
+						log.Printf("[report] send failed: %v", err)
+					} else {
+						log.Printf("[report] ok: cpu=%.1f%% mem=%.1f/%.1fGB containers=%d",
+							metrics.System.CPUPercent,
+							metrics.System.MemUsedGB, metrics.System.MemTotalGB,
+							len(metrics.Containers))
+					}
+				}(token)
+			default:
+				log.Printf("[report] skipping tick — previous collection still in flight")
 			}
 		}
 	}

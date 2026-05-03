@@ -110,6 +110,8 @@ export default function AgentDetail({
 }) {
   const isAdmin = role === 'admin';
   const [containers, setContainers] = useState<Container[]>([]);
+  const [sortKey, setSortKey] = useState<'name' | 'cpu' | 'mem'>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [selected, setSelected] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteInput, setDeleteInput] = useState('');
@@ -200,11 +202,15 @@ export default function AgentDetail({
     }
   }, [token, agent.id, selected, rangeMin, onExpired]);
 
+  const [refreshMs, setRefreshMs] = useState(10_000);
+  const [customInput, setCustomInput] = useState('');
+  const [customApplied, setCustomApplied] = useState(false);
+
   useEffect(() => {
     loadContainers();
-    const id = setInterval(loadContainers, 10_000);
+    const id = setInterval(loadContainers, refreshMs);
     return () => clearInterval(id);
-  }, [loadContainers]);
+  }, [loadContainers, refreshMs]);
 
   useEffect(() => {
     if (!selected) {
@@ -217,6 +223,23 @@ export default function AgentDetail({
   }, [loadHistory, selected]);
 
   // Freeze now-window at each history load so ticks don't drift during hover.
+  const sortedContainers = useMemo(() => {
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...containers].sort((a, b) => {
+      let d = 0;
+      if (sortKey === 'cpu') d = a.cpu_percent - b.cpu_percent;
+      else if (sortKey === 'mem') d = a.mem_used_mb - b.mem_used_mb;
+      else d = a.name.localeCompare(b.name);
+      if (d !== 0) return d * dir;
+      return a.name.localeCompare(b.name); // stable tiebreaker
+    });
+  }, [containers, sortKey, sortDir]);
+
+  const toggleSort = (key: typeof sortKey) => {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir(key === 'name' ? 'asc' : 'desc'); }
+  };
+
   const nowMs = useMemo(() => Date.now(), [history]);
   const rangeMs = rangeMin * 60_000;
   const xMin = nowMs - rangeMs;
@@ -542,8 +565,39 @@ export default function AgentDetail({
         <div className="detail-section">
           <div className="chart-header">
             <span className="detail-section-title">Containers</span>
-            <span className="detail-subtitle">
-              {containers.length} running · refreshes every 10 s · select a row for history
+            <span className="detail-subtitle" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {containers.length} running · select a row for history
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                {[3000, 5000, 10000].map(ms => (
+                  <button
+                    key={ms}
+                    className={`btn btn-xs${refreshMs === ms && !customApplied ? ' btn-active' : ''}`}
+                    onClick={() => { setRefreshMs(ms); setCustomApplied(false); setCustomInput(''); }}
+                  >{ms / 1000}s</button>
+                ))}
+                <input
+                  type="number"
+                  min={1}
+                  placeholder="custom s"
+                  value={customInput}
+                  onChange={e => { setCustomInput(e.target.value); setCustomApplied(false); }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      const n = parseInt(customInput, 10);
+                      if (n >= 1) { setRefreshMs(n * 1000); setCustomApplied(true); }
+                    }
+                  }}
+                  style={{ width: 72, fontSize: 11, color: customApplied ? 'var(--muted)' : undefined }}
+                  className="input-xs"
+                />
+                <button
+                  className="btn btn-xs"
+                  onClick={() => {
+                    const n = parseInt(customInput, 10);
+                    if (n >= 1) { setRefreshMs(n * 1000); setCustomApplied(true); }
+                  }}
+                >set</button>
+              </span>
             </span>
           </div>
 
@@ -554,15 +608,21 @@ export default function AgentDetail({
               <table className="container-table" aria-label="Containers">
                 <thead>
                   <tr>
-                    <th scope="col">Name</th>
+                    <th scope="col" className={`th-sort${sortKey === 'name' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('name')}>
+                      Name {sortKey === 'name' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+                    </th>
                     <th scope="col">Image</th>
-                    <th scope="col">CPU</th>
-                    <th scope="col">Memory</th>
+                    <th scope="col" className={`th-sort${sortKey === 'cpu' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('cpu')}>
+                      CPU {sortKey === 'cpu' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+                    </th>
+                    <th scope="col" className={`th-sort${sortKey === 'mem' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('mem')}>
+                      Memory {sortKey === 'mem' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+                    </th>
                     <th scope="col">Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {containers.map(c => {
+                  {sortedContainers.map(c => {
                     const isSel = selected === c.name;
                     return (
                       <tr

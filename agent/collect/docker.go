@@ -17,7 +17,7 @@ import (
 )
 
 // maxConcurrent limits parallel Docker stat calls to protect the daemon.
-const maxConcurrent = 10
+const maxConcurrent = 100
 
 type DockerCollector struct {
 	cli      *client.Client
