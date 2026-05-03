@@ -128,3 +128,6 @@ Active file (100 MB) fills in ~4 hours raw
 10 rotations × ~10 MB gzipped = ~100 MB
 But LOG_RETENTION_DAYS=5 kicks in first → caps at 5 days
 Effective state: ~13 MB gzipped + partial active file. Comfortable.
+
+0–2 min ago: raw samples (every COLLECT_INTERVAL, e.g. 3s or 10s) — live, high-res
+2+ min ago: 1-min rollup averages — lower-res but covers full retention window (7 days default)

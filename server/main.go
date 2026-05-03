@@ -31,7 +31,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	db, err := store.New(cfg.DBPath)
+	db, err := store.New(cfg.DBPath, time.Duration(cfg.RawRetentionMinutes)*time.Minute)
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 FROM golang:1.25.1-alpine AS builder
 
 # Support cross-compilation (docker buildx --platform linux/arm64, etc.)

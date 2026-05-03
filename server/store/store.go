@@ -15,12 +15,16 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db           *sql.DB
+	rawRetention time.Duration
 }
 
 // New opens (or creates) the SQLite database and runs schema migrations.
 // It creates the parent directory if it does not exist.
-func New(dbPath string) (*Store, error) {
+func New(dbPath string, rawRetention time.Duration) (*Store, error) {
+	if rawRetention <= 0 {
+		rawRetention = defaultRawRetention
+	}
 	if dir := filepath.Dir(dbPath); dir != "." {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("create db dir: %w", err)
@@ -44,7 +48,7 @@ func New(dbPath string) (*Store, error) {
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(2)
 
-	s := &Store{db: db}
+	s := &Store{db: db, rawRetention: rawRetention}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -794,13 +798,21 @@ func (s *Store) SaveReport(agentID string, ts time.Time, sys SystemMetrics, cont
 
 // GetContainerHistoryByName returns 1-minute average metrics for a single
 // container on the given agent, ordered oldest-first.
+// Raw rows from the last 2 minutes are unioned in as live points so the graph
+// has near-real-time data before the rollup job processes them.
 func (s *Store) GetContainerHistoryByName(agentID, name string, since time.Time) ([]ContainerPoint, error) {
 	rows, err := s.db.Query(`
 		SELECT ts_minute, cpu_percent, mem_used_mb, mem_limit_mb
 		FROM container_metrics_1m
 		WHERE agent_id = ? AND container_name = ? AND ts_minute >= ?
-		ORDER BY ts_minute ASC
-	`, agentID, name, since.Unix())
+		UNION ALL
+		SELECT CAST(strftime('%s', timestamp) AS INTEGER),
+		       cpu_percent, mem_used_mb, mem_limit_mb
+		FROM container_metrics
+		WHERE agent_id = ? AND container_name = ?
+		  AND timestamp >= datetime('now', '-' || ? || ' seconds')
+		ORDER BY 1 ASC
+	`, agentID, name, since.Unix(), agentID, name, int(s.rawRetention.Seconds()))
 	if err != nil {
 		return nil, err
 	}
@@ -1723,6 +1735,9 @@ func (s *Store) WebhookURL(id int64) (string, error) {
 	return url, err
 }
 
+// defaultRawRetention is used when no value is provided via config.
+const defaultRawRetention = 2 * time.Minute
+
 // ── Rollup & Prune ────────────────────────────────────────────────────────────
 
 // RollupAndPrune should be called every minute. It:
@@ -1734,7 +1749,7 @@ func (s *Store) WebhookURL(id int64) (string, error) {
 func (s *Store) RollupAndPrune(containerDays int) error {
 	now := time.Now().UTC()
 	rollupBefore := now.Add(-time.Minute).Format(time.RFC3339)
-	rawCutoff := now.Add(-2 * time.Minute).Format(time.RFC3339)
+	rawCutoff := now.Add(-s.rawRetention).Format(time.RFC3339)
 	ctrCutoff := now.AddDate(0, 0, -containerDays).Unix()
 
 	tx, err := s.db.Begin()

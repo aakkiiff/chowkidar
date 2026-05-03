@@ -14,6 +14,7 @@ type Config struct {
 	AdminUser               string
 	AdminPass               string
 	RetentionDaysContainers int
+	RawRetentionMinutes     int
 	LogDir                  string
 	LogRetentionDays        int
 	LogMaxFileMB            int
@@ -45,6 +46,13 @@ func Load() (*Config, error) {
 		return n
 	}
 
+	rawRetMin := 2
+	if v := strings.TrimSpace(os.Getenv("RAW_RETENTION_MINUTES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rawRetMin = n
+		}
+	}
+
 	cfg := &Config{
 		Port:                    get("SERVER_PORT"),
 		JWTSecret:               get("JWT_SECRET"),
@@ -56,6 +64,7 @@ func Load() (*Config, error) {
 		LogRetentionDays:        getInt("LOG_RETENTION_DAYS"),
 		LogMaxFileMB:            getInt("LOG_MAX_FILE_MB"),
 		LogMaxRotations:         getInt("LOG_MAX_ROTATIONS"),
+		RawRetentionMinutes:     rawRetMin,
 	}
 
 	if len(missing) > 0 {

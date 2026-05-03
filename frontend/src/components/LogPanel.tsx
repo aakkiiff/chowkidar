@@ -269,7 +269,6 @@ function LogPanelImpl({ token, agentId, containerName, onExpired }: Props) {
                 className={`log-line log-sev-${sev} log-${e.stream}${e.fresh ? ' log-new' : ''}`}
               >
                 <span className="log-ts" title={e.timestamp}>{fmtTS(e.timestamp)}</span>
-                <span className={`log-stream log-${e.stream}`}>{e.stream}</span>
                 <span className="log-text">
                   {highlight(e.text, query.trim()).map((part, i) =>
                     typeof part === 'string'
