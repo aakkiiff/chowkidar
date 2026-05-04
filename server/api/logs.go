@@ -106,6 +106,10 @@ func (h *Handler) TailLogs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"streaming unsupported"})
 		return
 	}
+	if !h.sseGuard(w) {
+		return
+	}
+	defer h.sseRelease()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -153,6 +157,10 @@ func (h *Handler) StreamAlerts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"streaming unsupported"})
 		return
 	}
+	if !h.sseGuard(w) {
+		return
+	}
+	defer h.sseRelease()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

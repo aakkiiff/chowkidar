@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/technonext/chowkidar/server/safedial"
 )
 
 const (
@@ -28,7 +30,10 @@ type Poster struct {
 }
 
 func NewPoster() *Poster {
-	return &Poster{client: &http.Client{Timeout: requestTO}}
+	return &Poster{client: &http.Client{
+		Transport: safedial.Transport(),
+		Timeout:   requestTO,
+	}}
 }
 
 // Send marshals evt using the formatter registered for `kind` and POSTs it.
@@ -36,12 +41,12 @@ func NewPoster() *Poster {
 func (p *Poster) Send(url, kind string, evt Event) {
 	format, ok := formatters[kind]
 	if !ok {
-		log.Printf("[alert] unsupported webhook type %q — dropping event for %s", kind, evt.Hostname)
+		slog.Warn("unsupported webhook type", "type", kind, "hostname", evt.Hostname)
 		return
 	}
 	body, err := json.Marshal(format(evt))
 	if err != nil {
-		log.Printf("[alert] marshal: %v", err)
+		slog.Error("alert marshal failed", "err", err)
 		return
 	}
 
@@ -56,10 +61,10 @@ func (p *Poster) Send(url, kind string, evt Event) {
 			return
 		}
 		if status >= 400 && status < 500 {
-			log.Printf("[alert] webhook %s: client error %d, giving up: %v", url, status, err)
+			slog.Warn("webhook client error, giving up", "url", url, "status", status, "err", err)
 			return
 		}
-		log.Printf("[alert] webhook %s attempt %d failed: %v", url, attempt+1, err)
+		slog.Warn("webhook attempt failed", "url", url, "attempt", attempt+1, "err", err)
 	}
 }
 

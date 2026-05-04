@@ -263,16 +263,12 @@ func (s *Store) migrate() error {
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
-// CreateUser inserts the admin user on first run and updates the password on
-// every subsequent restart so the DB always reflects the current ADMIN_PASSWORD.
-// The bootstrap account is always 'admin' role.
-func (s *Store) CreateUser(username, hashedPassword string) error {
-	_, err := s.db.Exec(
-		`INSERT INTO users (username, password, role) VALUES (?, ?, 'admin')
-		 ON CONFLICT(username) DO UPDATE SET password = excluded.password, role = 'admin'`,
-		username, hashedPassword,
-	)
-	return err
+// HasUsers returns true when at least one user exists in the database.
+// Used by the setup endpoint to decide whether initial setup is still needed.
+func (s *Store) HasUsers() (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	return count > 0, err
 }
 
 // GetUser returns the password hash + role for the named user.

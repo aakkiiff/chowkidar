@@ -20,7 +20,6 @@ import (
 	"github.com/technonext/chowkidar/server/logstore"
 	"github.com/technonext/chowkidar/server/probe"
 	"github.com/technonext/chowkidar/server/store"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
@@ -54,16 +53,6 @@ func main() {
 	defer logStore.Close()
 
 	broker := logbroker.New()
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminPass), bcrypt.DefaultCost)
-	if err != nil {
-		slog.Error("hash admin password failed", "err", err)
-		os.Exit(1)
-	}
-	if err := db.CreateUser(cfg.AdminUser, string(hash)); err != nil {
-		slog.Error("create admin user failed", "err", err)
-		os.Exit(1)
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -132,7 +121,7 @@ func main() {
 		}
 	}()
 
-	handler := api.NewHandler(db, logStore, broker, alertBroker, cfg.JWTSecret)
+	handler := api.NewHandler(db, logStore, broker, alertBroker, cfg.JWTSecret, cfg.CookieSecure, cfg.MaxSSEConns)
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
 		Handler:      handler.Routes(),
@@ -178,7 +167,7 @@ func loadDotenv() {
 			return
 		}
 	}
-	if os.Getenv("ADMIN_USERNAME") == "" {
+	if os.Getenv("SERVER_PORT") == "" {
 		slog.Error("no .env file found and no env vars set", "tried", candidates)
 		os.Exit(1)
 	}

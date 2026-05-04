@@ -19,9 +19,17 @@ import (
 // maxConcurrent limits parallel Docker stat calls to protect the daemon.
 const maxConcurrent = 100
 
+type inspectCache struct {
+	status       string
+	restartCount int
+	startedAt    string
+}
+
 type DockerCollector struct {
 	cli      *client.Client
 	cpuCores int
+	mu       sync.Mutex
+	cache    map[string]inspectCache // keyed by container ID
 }
 
 func NewDockerCollector() (*DockerCollector, error) {
@@ -36,6 +44,7 @@ func NewDockerCollector() (*DockerCollector, error) {
 	return &DockerCollector{
 		cli:      cli,
 		cpuCores: runtime.NumCPU(),
+		cache:    make(map[string]inspectCache),
 	}, nil
 }
 
@@ -90,6 +99,20 @@ func (d *DockerCollector) Collect() ([]types.ContainerMetrics, error) {
 	}
 
 	wg.Wait()
+
+	// Evict cache entries for containers that no longer exist.
+	alive := make(map[string]struct{}, len(containers))
+	for _, c := range containers {
+		alive[c.ID] = struct{}{}
+	}
+	d.mu.Lock()
+	for id := range d.cache {
+		if _, ok := alive[id]; !ok {
+			delete(d.cache, id)
+		}
+	}
+	d.mu.Unlock()
+
 	return results, nil
 }
 
@@ -114,13 +137,25 @@ func (d *DockerCollector) collectOne(ctx context.Context, id, name, image, statu
 	}
 
 	// Inspect gives restart count and precise start time.
+	// Cache result keyed by container ID; re-inspect only when status changes.
 	restartCount := 0
 	startedAt := ""
-	if info, err := d.cli.ContainerInspect(ctx, id); err == nil {
-		restartCount = info.RestartCount
-		if info.State != nil {
-			startedAt = info.State.StartedAt
+	d.mu.Lock()
+	cached, hit := d.cache[id]
+	d.mu.Unlock()
+	if hit && cached.status == status {
+		restartCount = cached.restartCount
+		startedAt = cached.startedAt
+	} else {
+		if info, err := d.cli.ContainerInspect(ctx, id); err == nil {
+			restartCount = info.RestartCount
+			if info.State != nil {
+				startedAt = info.State.StartedAt
+			}
 		}
+		d.mu.Lock()
+		d.cache[id] = inspectCache{status: status, restartCount: restartCount, startedAt: startedAt}
+		d.mu.Unlock()
 	}
 
 	return types.ContainerMetrics{

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/technonext/chowkidar/server/alert"
@@ -20,24 +21,39 @@ import (
 )
 
 type Handler struct {
-	store       *store.Store
-	logs        *logstore.Store
-	broker      *logbroker.Broker
+	store      *store.Store
+	logs       *logstore.Store
+	broker     *logbroker.Broker
 	alertBroker *alert.Broker
-	secret      string
-	loginLimit  *ipLimiter
+	secret     string
+	loginLimit *ipLimiter
+
+	cookieSecure     bool
+	maxSSEConns      int
+	sseConns         atomic.Int64
+	setupLimit       *ipLimiter
+	agentReportLimit *ipLimiter
+	agentIngestLimit *ipLimiter
 }
 
-func NewHandler(s *store.Store, ls *logstore.Store, br *logbroker.Broker, ab *alert.Broker, jwtSecret string) *Handler {
+func NewHandler(s *store.Store, ls *logstore.Store, br *logbroker.Broker, ab *alert.Broker, jwtSecret string, cookieSecure bool, maxSSEConns int) *Handler {
 	return &Handler{
 		store:       s,
 		logs:        ls,
 		broker:      br,
 		alertBroker: ab,
 		secret:      jwtSecret,
-		// 10 attempts/min, burst 5, evict IPs idle for 15 min. Keeps
-		// bcrypt (100ms/attempt) from becoming a DoS surface.
+		cookieSecure: cookieSecure,
+		maxSSEConns:  maxSSEConns,
+		// 10 attempts/min, burst 5, evict IPs idle for 15 min.
 		loginLimit: newIPLimiter(10, 5, 15*time.Minute),
+		// Setup: very tight — 5/min, burst 3. One-time flow.
+		setupLimit: newIPLimiter(5, 3, 15*time.Minute),
+		// Per-agent-token rate limiters. Keyed by token hash, not IP.
+		// Report: generous — 30/min covers 10s intervals with headroom.
+		agentReportLimit: newIPLimiter(30, 5, 15*time.Minute),
+		// IngestLogs: limit reconnections — 1 long-lived connection is normal.
+		agentIngestLimit: newIPLimiter(6, 2, 15*time.Minute),
 	}
 }
 
@@ -52,7 +68,16 @@ const (
 
 func (h *Handler) requireJWT(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := bearerToken(r)
+		// Cookie takes precedence (browser clients); Authorization header is
+		// the fallback for API/CLI clients and agent tokens won't collide here
+		// since agent endpoints bypass requireJWT entirely.
+		token := ""
+		if c, err := r.Cookie("chowkidar_token"); err == nil && c.Value != "" {
+			token = c.Value
+		}
+		if token == "" {
+			token = bearerToken(r)
+		}
 		if token == "" {
 			writeJSON(w, http.StatusUnauthorized, errorResponse{"missing token"})
 			return
@@ -69,7 +94,6 @@ func (h *Handler) requireJWT(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // requireAdmin wraps requireJWT and rejects non-admin requests with 403.
-// Use it on endpoints that mutate config or expose other users.
 func (h *Handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return h.requireJWT(func(w http.ResponseWriter, r *http.Request) {
 		role, _ := r.Context().Value(ctxKeyRole).(string)
@@ -81,9 +105,24 @@ func (h *Handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// sseGuard rejects new SSE connections when the global cap is reached.
+// Call at the top of SSE handlers; the returned bool indicates whether to
+// proceed (true) or abort (false, 503 already written).
+func (h *Handler) sseGuard(w http.ResponseWriter) bool {
+	if h.sseConns.Load() >= int64(h.maxSSEConns) {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"too many concurrent streams"})
+		return false
+	}
+	h.sseConns.Add(1)
+	return true
+}
+
+func (h *Handler) sseRelease() { h.sseConns.Add(-1) }
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -114,11 +153,84 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"token generation failed"})
 		return
 	}
+
+	// Set httpOnly cookie — JS cannot read this token, mitigating XSS token theft.
+	http.SetCookie(w, &http.Cookie{
+		Name:     "chowkidar_token",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   86400, // 24h, matches JWT expiry
+		Secure:   h.cookieSecure,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{
-		"token":    token,
 		"username": req.Username,
 		"role":     role,
 	})
+}
+
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "chowkidar_token",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+		Secure:   h.cookieSecure,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── First-boot setup ──────────────────────────────────────────────────────────
+
+// SetupStatus returns whether initial setup is still needed.
+// Public endpoint — safe to call before any users exist.
+func (h *Handler) SetupStatus(w http.ResponseWriter, r *http.Request) {
+	has, err := h.store.HasUsers()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"db error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"setup_needed": !has})
+}
+
+// Setup creates the first admin user. Only works when no users exist.
+func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	has, err := h.store.HasUsers()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"db error"})
+		return
+	}
+	if has {
+		writeJSON(w, http.StatusForbidden, errorResponse{"setup already completed"})
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
+		return
+	}
+	if l := len(req.Password); l < 12 || l > 72 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"password must be 12–72 characters"})
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"internal error"})
+		return
+	}
+	if _, err := h.store.CreateAppUser("admin", string(hash), RoleAdmin); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to create admin user"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"username": "admin"})
 }
 
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +242,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 // ── Agents ────────────────────────────────────────────────────────────────────
 
 func (h *Handler) RegisterAgent(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	var req struct {
 		Hostname string `json:"hostname"`
 	}
@@ -168,6 +281,7 @@ func (h *Handler) RenameAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"id required"})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	var req struct {
 		Hostname string `json:"hostname"`
 	}
@@ -289,8 +403,7 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// GetAgent returns a single agent by id. Powers deep-link refresh on the
-// dashboard's agent detail page.
+// GetAgent returns a single agent by id.
 func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -313,14 +426,14 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAgentResponse(a))
 }
 
-// SetAgentAlerts toggles the per-agent alert flag. Future alert rules
-// reference this flag as a master switch.
+// SetAgentAlerts toggles the per-agent alert flag.
 func (h *Handler) SetAgentAlerts(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"id required"})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
@@ -354,9 +467,7 @@ func (h *Handler) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to delete agent"})
 		return
 	}
-	// Best-effort log purge. A failure here shouldn't block the DB deletion.
 	if err := h.logs.DeleteAgent(id); err != nil {
-		// Logged but not surfaced to the client.
 		_ = err
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -364,8 +475,6 @@ func (h *Handler) DeleteAgent(w http.ResponseWriter, r *http.Request) {
 
 // ── Agent detail ──────────────────────────────────────────────────────────────
 
-// AgentContainers returns the latest container list for an agent, sorted by
-// CPU% descending (mirrors the output of `docker stats`).
 func (h *Handler) AgentContainers(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !h.canSeeAgent(r, id) {
@@ -383,8 +492,6 @@ func (h *Handler) AgentContainers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, containers)
 }
 
-// ContainerHistory returns 1-minute aggregated metrics for a single container
-// over the requested time range. Supported ranges: 1h, 6h, 24h, 7d (default 1h).
 func (h *Handler) ContainerHistory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !h.canSeeAgent(r, id) {
@@ -405,18 +512,14 @@ func (h *Handler) ContainerHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"points": points})
 }
 
-// timeAgo returns now minus minutes as a time.Time. Lifted out so handlers
-// in this package share a single helper.
 func timeAgo(minutes int) time.Time {
 	return time.Now().Add(-time.Duration(minutes) * time.Minute)
 }
 
 func parseRange(r string) time.Duration {
-	// Numeric "range" is interpreted as minutes, capped at 30 days.
 	if n, err := strconv.Atoi(r); err == nil && n > 0 && n <= 30*24*60 {
 		return time.Duration(n) * time.Minute
 	}
-	// Legacy named ranges.
 	switch r {
 	case "6h":
 		return 6 * time.Hour
@@ -425,7 +528,7 @@ func parseRange(r string) time.Duration {
 	case "7d":
 		return 7 * 24 * time.Hour
 	default:
-		return time.Hour // 1h
+		return time.Hour
 	}
 }
 
@@ -443,6 +546,8 @@ func (h *Handler) Report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cap body at 1 MB — prevents memory exhaustion from rogue agent tokens.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Timestamp  time.Time                `json:"timestamp"`
 		System     store.SystemMetrics      `json:"system"`
@@ -499,8 +604,6 @@ func hashToken(token string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// isUniqueErr detects SQLite UNIQUE constraint violations without taking
-// a hard dependency on the sqlite3 driver type in every call site.
 func isUniqueErr(err error) bool {
 	if err == nil {
 		return false

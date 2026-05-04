@@ -7,18 +7,19 @@ import (
 	"context"
 	"database/sql"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/technonext/chowkidar/server/alert"
+	"github.com/technonext/chowkidar/server/safedial"
 	"github.com/technonext/chowkidar/server/store"
 )
 
 const (
-	requestTO          = 10 * time.Second
-	sslWarnThresholdD  = 14 // days from NotAfter to consider a cert "expiring soon"
+	requestTO         = 10 * time.Second
+	sslWarnThresholdD = 14 // days from NotAfter to consider a cert "expiring soon"
 )
 
 type Prober struct {
@@ -51,7 +52,8 @@ func New(st *store.Store, broker *alert.Broker, poster *alert.Poster) *Prober {
 		openIncident: map[int64]int64{},
 		sslFired:     map[int64]time.Time{},
 		client: &http.Client{
-			Timeout: requestTO,
+			Transport: safedial.Transport(),
+			Timeout:   requestTO,
 			// Don't auto-follow redirects: many uptime monitors care about
 			// the literal first response. 3xx is treated as healthy below.
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -93,7 +95,7 @@ type agentInfo struct {
 func (p *Prober) cycle(ctx context.Context) {
 	endpoints, err := p.st.AllEndpoints()
 	if err != nil {
-		log.Printf("[probe] list: %v", err)
+		slog.Warn("probe list failed", "err", err)
 		return
 	}
 	if len(endpoints) == 0 {
@@ -148,17 +150,17 @@ func (p *Prober) cycle(ctx context.Context) {
 func (p *Prober) buildAgentCache() map[string]agentInfo {
 	hostnames, err := p.st.ListAgentHostnames()
 	if err != nil {
-		log.Printf("[probe] cache hostnames: %v", err)
+		slog.Warn("probe cache hostnames failed", "err", err)
 		hostnames = map[string]string{}
 	}
 	rules, err := p.st.ListAlertRules()
 	if err != nil {
-		log.Printf("[probe] cache rules: %v", err)
+		slog.Warn("probe cache rules failed", "err", err)
 		rules = map[string]store.AlertRule{}
 	}
 	webhooks, err := p.st.ListWebhooks()
 	if err != nil {
-		log.Printf("[probe] cache webhooks: %v", err)
+		slog.Warn("probe cache webhooks failed", "err", err)
 	}
 	webhookByID := map[int64]store.Webhook{}
 	for _, w := range webhooks {
@@ -228,7 +230,7 @@ func (p *Prober) record(e store.Endpoint, start time.Time, code, latency int, ok
 		Error:        errStr,
 		CertNotAfter: certNotAfter,
 	}); err != nil {
-		log.Printf("[probe] record %d: %v", e.ID, err)
+		slog.Warn("probe record failed", "endpoint", e.ID, "err", err)
 	}
 
 	// Always record the incident transition for storage / uptime maths,
@@ -264,7 +266,7 @@ func (p *Prober) recordIncidentTransition(e store.Endpoint, at time.Time, ok boo
 			p.openIncident[e.ID] = id
 			p.mu.Unlock()
 		} else if err != sql.ErrNoRows {
-			log.Printf("[probe] latest-open %d: %v", e.ID, err)
+			slog.Warn("probe latest-open failed", "endpoint", e.ID, "err", err)
 		}
 	}
 
@@ -273,7 +275,7 @@ func (p *Prober) recordIncidentTransition(e store.Endpoint, at time.Time, ok boo
 		// First fail — open a fresh row.
 		id, err := p.st.OpenIncident(e.ID, at, status, errStr)
 		if err != nil {
-			log.Printf("[probe] open incident %d: %v", e.ID, err)
+			slog.Warn("probe open incident failed", "endpoint", e.ID, "err", err)
 			return
 		}
 		p.mu.Lock()
@@ -282,12 +284,12 @@ func (p *Prober) recordIncidentTransition(e store.Endpoint, at time.Time, ok boo
 	case !ok && openID != 0:
 		// Continued fail — bump the existing row.
 		if err := p.st.BumpIncident(openID, status, errStr); err != nil {
-			log.Printf("[probe] bump incident %d: %v", openID, err)
+			slog.Warn("probe bump incident failed", "incident", openID, "err", err)
 		}
 	case ok && openID != 0:
 		// Recovery — close the row.
 		if err := p.st.CloseIncident(e.ID, at); err != nil {
-			log.Printf("[probe] close incident %d: %v", e.ID, err)
+			slog.Warn("probe close incident failed", "endpoint", e.ID, "err", err)
 		}
 		p.mu.Lock()
 		delete(p.openIncident, e.ID)
@@ -396,7 +398,7 @@ func (p *Prober) lookupAgent(agentID string) (hostname, webhookURL, webhookType 
 	a, err := p.st.GetAgentWithMetrics(agentID)
 	if err != nil {
 		if err != sql.ErrNoRows {
-			log.Printf("[probe] agent lookup %s: %v", agentID, err)
+			slog.Warn("probe agent lookup failed", "agent", agentID, "err", err)
 		}
 		return agentID, "", ""
 	}

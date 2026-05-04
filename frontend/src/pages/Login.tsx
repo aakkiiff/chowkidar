@@ -27,7 +27,7 @@ export default function Login() {
     setLoading(true);
     try {
       const res = await login(username, password);
-      saveSession(res.token);
+      saveSession(res.username, res.role);
       navigate(from, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');

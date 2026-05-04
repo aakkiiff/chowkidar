@@ -3,8 +3,12 @@
 // different origins.
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '/api/v1').replace(/\/$/, '');
 
+// Auth is handled exclusively via httpOnly cookie set by the server on login.
+// credentials: 'include' ensures the browser sends the cookie on every request.
+// Authorization headers are NOT sent — the token is never accessible to JS.
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
     ...options,
   });
@@ -20,21 +24,42 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+// ── Setup ─────────────────────────────────────────────────────────────────────
+
+export async function getSetupStatus(): Promise<{ setup_needed: boolean }> {
+  const res = await fetch(`${API_BASE}/setup/status`, { credentials: 'include' });
+  if (!res.ok) return { setup_needed: false };
+  return res.json();
+}
+
+export async function setupAdmin(password: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/setup`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Setup failed');
+  }
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 export type Role = 'admin' | 'developer';
 
+// login posts credentials and receives the session cookie from the server.
+// Returns username+role for UI display; the JWT itself stays in the httpOnly cookie.
 export function login(username: string, password: string) {
-  return request<{ token: string; username: string; role: Role }>('/auth/login', {
+  return request<{ username: string; role: Role }>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
   });
 }
 
-export function me(token: string) {
-  return request<{ username: string; role: Role }>('/auth/me', {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function me(_token: string) {
+  return request<{ username: string; role: Role }>('/auth/me');
 }
 
 // ── User management (admin only) ──────────────────────────────────────────────
@@ -47,60 +72,52 @@ export interface AppUser {
   created_at: string;
 }
 
-export function listUsers(token: string) {
-  return request<AppUser[]>('/users', {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function listUsers(_token: string) {
+  return request<AppUser[]>('/users');
 }
 
-export function createUser(token: string, username: string, password: string, role: Role, agentIds?: string[]) {
+export function createUser(_token: string, username: string, password: string, role: Role, agentIds?: string[]) {
   return request<AppUser>('/users', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ username, password, role, agent_ids: agentIds }),
   });
 }
 
-export async function deleteUser(token: string, id: number): Promise<void> {
+export async function deleteUser(_token: string, id: number): Promise<void> {
   const res = await fetch(`${API_BASE}/users/${id}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
+    credentials: 'include',
   });
-  if (res.status === 401) {
-    clearSession();
-    throw new Error('Session expired');
-  }
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
   if (!res.ok && res.status !== 204) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || 'Delete failed');
   }
 }
 
-export async function setUserPassword(token: string, id: number, password: string): Promise<void> {
+export async function setUserPassword(_token: string, id: number, password: string): Promise<void> {
   const res = await fetch(`${API_BASE}/users/${id}/password`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password }),
   });
-  if (res.status === 401) {
-    clearSession();
-    throw new Error('Session expired');
-  }
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
   if (!res.ok && res.status !== 204) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || 'Update failed');
   }
 }
 
-export async function changeOwnPassword(token: string, currentPassword: string, newPassword: string): Promise<void> {
+export async function changeOwnPassword(_token: string, currentPassword: string, newPassword: string): Promise<void> {
   const res = await fetch(`${API_BASE}/auth/password`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   });
   if (res.status === 401) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    // 401 from this endpoint means wrong current password, not session expiry
     throw new Error(body.error || 'Unauthorized');
   }
   if (!res.ok && res.status !== 204) {
@@ -109,16 +126,14 @@ export async function changeOwnPassword(token: string, currentPassword: string, 
   }
 }
 
-export async function setUserAgents(token: string, userId: number, agentIds: string[]): Promise<void> {
+export async function setUserAgents(_token: string, userId: number, agentIds: string[]): Promise<void> {
   const res = await fetch(`${API_BASE}/users/${userId}/agents`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent_ids: agentIds }),
   });
-  if (res.status === 401) {
-    clearSession();
-    throw new Error('Session expired');
-  }
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
   if (!res.ok && res.status !== 204) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || 'Update failed');
@@ -127,7 +142,6 @@ export async function setUserAgents(token: string, userId: number, agentIds: str
 
 // ── Agents ────────────────────────────────────────────────────────────────────
 
-// Matches the server's agentResponse — metrics are null until first report.
 export interface Agent {
   id: string;
   hostname: string;
@@ -142,54 +156,42 @@ export interface Agent {
   active_issues: number;
 }
 
-export function listAgents(token: string) {
-  return request<Agent[]>('/agents', {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function listAgents(_token: string) {
+  return request<Agent[]>('/agents');
 }
 
-export function getAgent(token: string, agentId: string) {
-  return request<Agent>(`/agents/${agentId}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getAgent(_token: string, agentId: string) {
+  return request<Agent>(`/agents/${agentId}`);
 }
 
-export function registerAgent(token: string, hostname: string) {
+export function registerAgent(_token: string, hostname: string) {
   return request<{ agent_id: string; token: string }>('/agents/register', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ hostname }),
   });
 }
 
 export interface AlertRule {
   agent_id: string;
-  // System (host) thresholds — % values
   cpu_enabled: boolean;
   cpu_threshold: number;
   mem_enabled: boolean;
   mem_threshold: number;
   disk_enabled: boolean;
   disk_threshold: number;
-  // Container thresholds. Apply to every container under this agent.
   ctr_down_enabled: boolean;
   ctr_cpu_enabled: boolean;
-  ctr_cpu_threshold_mcore: number; // 1000 mCore = 1 full core
+  ctr_cpu_threshold_mcore: number;
   ctr_mem_enabled: boolean;
-  ctr_mem_threshold: number; // % of mem limit
-  // Master toggle: enable/disable down alerts for all endpoints under this agent.
+  ctr_mem_threshold: number;
   endpoint_down_enabled: boolean;
-  // Fires when any endpoint's TLS leaf cert is within 14 days of expiry.
   ssl_alert_enabled: boolean;
-  // Fires when the agent stops reporting beyond the sustain window.
   agent_down_enabled: boolean;
   webhook_id: number | null;
 }
 
-export function getAlertRule(token: string, agentId: string) {
-  return request<AlertRule>(`/agents/${agentId}/alert-rule`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getAlertRule(_token: string, agentId: string) {
+  return request<AlertRule>(`/agents/${agentId}/alert-rule`);
 }
 
 export interface AlertSettings {
@@ -197,53 +199,44 @@ export interface AlertSettings {
   resend_cooldown_seconds: number;
 }
 
-export function getAlertSettings(token: string) {
-  return request<AlertSettings>('/settings/alerts', {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getAlertSettings(_token: string) {
+  return request<AlertSettings>('/settings/alerts');
 }
 
-export function saveAlertSettings(token: string, s: AlertSettings) {
+export function saveAlertSettings(_token: string, s: AlertSettings) {
   return request<AlertSettings>('/settings/alerts', {
     method: 'PUT',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(s),
   });
 }
 
-export function saveAlertRule(token: string, rule: AlertRule) {
+export function saveAlertRule(_token: string, rule: AlertRule) {
   return request<AlertRule>(`/agents/${rule.agent_id}/alert-rule`, {
     method: 'PUT',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(rule),
   });
 }
 
-export function setAgentAlerts(token: string, agentId: string, enabled: boolean) {
+export function setAgentAlerts(_token: string, agentId: string, enabled: boolean) {
   return request<{ id: string; alerts_enabled: boolean }>(`/agents/${agentId}/alerts`, {
     method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ enabled }),
   });
 }
 
-export function renameAgent(token: string, agentId: string, hostname: string) {
+export function renameAgent(_token: string, agentId: string, hostname: string) {
   return request<{ id: string; hostname: string }>(`/agents/${agentId}`, {
     method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ hostname }),
   });
 }
 
-export async function deleteAgent(token: string, agentId: string): Promise<void> {
+export async function deleteAgent(_token: string, agentId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/agents/${agentId}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
+    credentials: 'include',
   });
-  if (res.status === 401) {
-    clearSession();
-    throw new Error('Session expired');
-  }
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
   if (!res.ok && res.status !== 204) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || 'Delete failed');
@@ -266,10 +259,8 @@ export interface Container {
   net_tx_mb: number;
 }
 
-export function getAgentContainers(token: string, agentId: string) {
-  return request<Container[]>(`/agents/${agentId}/containers`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getAgentContainers(_token: string, agentId: string) {
+  return request<Container[]>(`/agents/${agentId}/containers`);
 }
 
 export interface ContainerPoint {
@@ -279,19 +270,16 @@ export interface ContainerPoint {
   mem_limit_mb: number;
 }
 
-// Historical range expressed in minutes. Server accepts any positive integer
-// up to 30 days. UI keeps a preset list but also allows custom values.
 export type HistoryRange = number;
 
 export function getContainerHistory(
-  token: string,
+  _token: string,
   agentId: string,
   name: string,
   minutes: HistoryRange,
 ) {
   return request<{ points: ContainerPoint[] }>(
     `/agents/${agentId}/containers/${encodeURIComponent(name)}/history?range=${minutes}`,
-    { headers: { Authorization: `Bearer ${token}` } },
   );
 }
 
@@ -319,10 +307,8 @@ export interface AlertEvent {
   resolved: boolean;
 }
 
-// streamAlerts opens an SSE connection and reconnects with exponential backoff
-// if the stream drops. It resolves only when the AbortController is triggered.
 export function streamAlerts(
-  token: string,
+  _token: string,
   onEvent: (e: AlertEvent) => void,
   onError: (err: unknown) => void,
 ): AbortController {
@@ -331,7 +317,7 @@ export function streamAlerts(
   const connect = async (): Promise<'retry' | 'stop'> => {
     try {
       const res = await fetch(`${API_BASE}/alerts/stream`, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
         signal: ctrl.signal,
       });
       if (res.status === 401) {
@@ -345,7 +331,7 @@ export function streamAlerts(
       let buf = '';
       while (true) {
         const { done, value } = await reader.read();
-        if (done) return 'retry'; // server closed — reconnect
+        if (done) return 'retry';
         buf += value;
         let idx: number;
         while ((idx = buf.indexOf('\n\n')) >= 0) {
@@ -354,16 +340,11 @@ export function streamAlerts(
           if (frame.startsWith(':')) continue;
           const dataLine = frame.split('\n').find(l => l.startsWith('data: '));
           if (!dataLine) continue;
-          try {
-            onEvent(JSON.parse(dataLine.slice(6)) as AlertEvent);
-          } catch {
-            /* ignore malformed frame */
-          }
+          try { onEvent(JSON.parse(dataLine.slice(6)) as AlertEvent); } catch { /* ignore */ }
         }
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return 'stop';
-      // Surface transient errors but keep trying.
       onError(err);
       return 'retry';
     }
@@ -385,14 +366,13 @@ export function streamAlerts(
 // ── Log fetch + streaming ─────────────────────────────────────────────────────
 
 export function getRecentLogs(
-  token: string,
+  _token: string,
   agentId: string,
   name: string,
   minutes: number,
 ) {
   return request<LogLine[]>(
     `/agents/${agentId}/containers/${encodeURIComponent(name)}/logs?minutes=${minutes}`,
-    { headers: { Authorization: `Bearer ${token}` } },
   );
 }
 
@@ -404,11 +384,8 @@ export interface LogLine {
   text: string;
 }
 
-// streamLogs opens an SSE connection to the log tail endpoint, authed with the
-// bearer token. onLine is called for each incoming event; the returned AbortController
-// can be used to close the stream (and is triggered automatically by the signal).
 export function streamLogs(
-  token: string,
+  _token: string,
   agentId: string,
   name: string,
   tail: number,
@@ -421,13 +398,10 @@ export function streamLogs(
   (async () => {
     try {
       const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
         signal: ctrl.signal,
       });
-      if (res.status === 401) {
-        clearSession();
-        throw new Error('Session expired');
-      }
+      if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
       if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`);
 
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -440,15 +414,10 @@ export function streamLogs(
         while ((idx = buf.indexOf('\n\n')) >= 0) {
           const frame = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
-          // skip heartbeat comments (": ping")
           if (frame.startsWith(':')) continue;
           const dataLine = frame.split('\n').find(l => l.startsWith('data: '));
           if (!dataLine) continue;
-          try {
-            onLine(JSON.parse(dataLine.slice(6)) as LogLine);
-          } catch {
-            /* ignore malformed frame */
-          }
+          try { onLine(JSON.parse(dataLine.slice(6)) as LogLine); } catch { /* ignore */ }
         }
       }
     } catch (err) {
@@ -474,7 +443,6 @@ export interface Endpoint {
   last_latency_ms: number | null;
   last_ok: boolean | null;
   last_error?: string;
-  /** Server cert NotAfter from latest TLS probe. null for plain http. */
   last_cert_not_after?: string | null;
 }
 
@@ -493,11 +461,11 @@ export interface EndpointIncident {
   id: number;
   endpoint_id: number;
   started_at: string;
-  ended_at?: string;       // omitted on ongoing incidents
+  ended_at?: string;
   last_status: number;
   last_error?: string;
   probe_count: number;
-  duration_s: number;       // seconds; for ongoing rows == elapsed since start
+  duration_s: number;
 }
 
 export interface UptimeStats {
@@ -511,67 +479,53 @@ export interface UptimeStats {
   longest_seconds: number;
 }
 
-export function getEndpointIncidents(token: string, id: number, range: string) {
-  return request<EndpointIncident[]>(`/endpoints/${id}/incidents?range=${range}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getEndpointIncidents(_token: string, id: number, range: string) {
+  return request<EndpointIncident[]>(`/endpoints/${id}/incidents?range=${range}`);
 }
 
-export function getEndpointUptime(token: string, id: number, range: string) {
-  return request<UptimeStats>(`/endpoints/${id}/uptime?range=${range}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getEndpointUptime(_token: string, id: number, range: string) {
+  return request<UptimeStats>(`/endpoints/${id}/uptime?range=${range}`);
 }
 
-export function listEndpoints(token: string, agentId: string) {
-  return request<Endpoint[]>(`/agents/${agentId}/endpoints`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function listEndpoints(_token: string, agentId: string) {
+  return request<Endpoint[]>(`/agents/${agentId}/endpoints`);
 }
 
-export function createEndpoint(token: string, agentId: string, name: string, url: string) {
+export function createEndpoint(_token: string, agentId: string, name: string, url: string) {
   return request<Endpoint>(`/agents/${agentId}/endpoints`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ name, url }),
   });
 }
 
-export function setEndpointAlert(token: string, id: number, enabled: boolean) {
+export function setEndpointAlert(_token: string, id: number, enabled: boolean) {
   return request<{ id: number; alert_on_down: boolean }>(`/endpoints/${id}/alert`, {
     method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ enabled }),
   });
 }
 
-export function updateEndpoint(token: string, id: number, name: string, url: string) {
+export function updateEndpoint(_token: string, id: number, name: string, url: string) {
   return request<Endpoint>(`/endpoints/${id}`, {
     method: 'PUT',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ name, url }),
   });
 }
 
-export async function deleteEndpoint(token: string, id: number): Promise<void> {
+export async function deleteEndpoint(_token: string, id: number): Promise<void> {
   const res = await fetch(`${API_BASE}/endpoints/${id}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
+    credentials: 'include',
   });
-  if (res.status === 401) {
-    clearSession();
-    throw new Error('Session expired');
-  }
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
   if (!res.ok && res.status !== 204) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || 'Delete failed');
   }
 }
 
-export function getEndpointProbes(token: string, id: number, minutes: number) {
-  return request<EndpointProbe[]>(`/endpoints/${id}/probes?minutes=${minutes}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getEndpointProbes(_token: string, id: number, minutes: number) {
+  return request<EndpointProbe[]>(`/endpoints/${id}/probes?minutes=${minutes}`);
 }
 
 export interface EndpointSettings {
@@ -579,16 +533,13 @@ export interface EndpointSettings {
   incident_retention_days: number;
 }
 
-export function getEndpointSettings(token: string) {
-  return request<EndpointSettings>(`/settings/endpoints`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function getEndpointSettings(_token: string) {
+  return request<EndpointSettings>(`/settings/endpoints`);
 }
 
-export function saveEndpointSettings(token: string, s: EndpointSettings) {
+export function saveEndpointSettings(_token: string, s: EndpointSettings) {
   return request<EndpointSettings>(`/settings/endpoints`, {
     method: 'PUT',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(s),
   });
 }
@@ -605,29 +556,23 @@ export interface Webhook {
   created_at: string;
 }
 
-export function listWebhooks(token: string) {
-  return request<Webhook[]>('/webhooks', {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+export function listWebhooks(_token: string) {
+  return request<Webhook[]>('/webhooks');
 }
 
-export function createWebhook(token: string, name: string, url: string, type: WebhookType) {
+export function createWebhook(_token: string, name: string, url: string, type: WebhookType) {
   return request<Webhook>('/webhooks', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ name, url, type }),
   });
 }
 
-export async function deleteWebhook(token: string, id: number): Promise<void> {
+export async function deleteWebhook(_token: string, id: number): Promise<void> {
   const res = await fetch(`${API_BASE}/webhooks/${id}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
+    credentials: 'include',
   });
-  if (res.status === 401) {
-    clearSession();
-    throw new Error('Session expired');
-  }
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
   if (!res.ok && res.status !== 204) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || 'Delete failed');
@@ -635,17 +580,31 @@ export async function deleteWebhook(token: string, id: number): Promise<void> {
 }
 
 // ── Session ───────────────────────────────────────────────────────────────────
+// The JWT lives in an httpOnly cookie set by the server — JS never sees it.
+// localStorage holds only username+role for UI display purposes.
 
-const TOKEN_KEY = 'chowkidar_token';
+const USER_KEY = 'chowkidar_user';
+const ROLE_KEY = 'chowkidar_role';
 
-export function saveSession(token: string) {
-  localStorage.setItem(TOKEN_KEY, token);
+export function saveSession(username: string, role: Role) {
+  localStorage.setItem(USER_KEY, username);
+  localStorage.setItem(ROLE_KEY, role);
 }
 
-export function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
+// getToken returns the stored username as a truthy "logged-in" indicator.
+// All API functions accept it as a parameter for signature compatibility but
+// do not use it for Authorization headers — the httpOnly cookie handles auth.
+export function getToken(): string | null {
+  return localStorage.getItem(USER_KEY);
+}
+
+export function getStoredRole(): Role | null {
+  return localStorage.getItem(ROLE_KEY) as Role | null;
 }
 
 export function clearSession() {
-  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(ROLE_KEY);
+  // Fire-and-forget — clears the httpOnly session cookie server-side.
+  fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
 }

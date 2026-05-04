@@ -15,36 +15,36 @@ describe('login', () => {
     vi.unstubAllGlobals();
   });
 
-  it('returns token on 200', async () => {
-    vi.stubGlobal('fetch', mockFetch(200, { token: 'tok123', username: 'admin', role: 'admin' }));
+  it('returns username and role on 200', async () => {
+    vi.stubGlobal('fetch', mockFetch(200, { username: 'admin', role: 'admin' }));
     const res = await login('admin', 'pass');
-    expect(res.token).toBe('tok123');
     expect(res.username).toBe('admin');
+    expect(res.role).toBe('admin');
   });
 
   it('throws on 401', async () => {
     vi.stubGlobal('fetch', mockFetch(401, { error: 'invalid credentials' }));
-    // 401 clears session and throws "Session expired"
     await expect(login('admin', 'wrong')).rejects.toThrow();
   });
 });
 
-describe('request Authorization header', () => {
+describe('request uses cookie auth', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('listAgents attaches Authorization header', async () => {
+  it('listAgents sends credentials: include (no Authorization header)', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       status: 200,
       ok: true,
       json: () => Promise.resolve([]),
     });
     vi.stubGlobal('fetch', fetchMock);
-    await listAgents('my-token');
+    await listAgents('ignored-token');
     const callArgs = fetchMock.mock.calls[0];
     const options = callArgs[1] as RequestInit;
-    expect((options.headers as Record<string, string>)['Authorization']).toBe('Bearer my-token');
+    expect(options.credentials).toBe('include');
+    expect((options.headers as Record<string, string>)?.['Authorization']).toBeUndefined();
   });
 
   it('throws Session expired on 401 from request', async () => {

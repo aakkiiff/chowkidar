@@ -7,6 +7,8 @@ func (h *Handler) Routes() http.Handler {
 
 	// Public
 	mux.HandleFunc("GET /api/v1/health", h.Health)
+	mux.HandleFunc("GET /api/v1/setup/status", h.SetupStatus)
+	mux.HandleFunc("POST /api/v1/setup", h.setupLimit.middleware(h.Setup))
 	mux.HandleFunc("POST /api/v1/auth/login", h.loginLimit.middleware(h.Login))
 
 	// Auth + read-only views available to every signed-in user.
@@ -56,9 +58,12 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/v1/users/{id}/password", h.requireAdmin(h.SetUserPassword))
 	mux.HandleFunc("PUT /api/v1/users/{id}/agents", h.requireAdmin(h.SetUserAgents))
 
-	// Agent reporting — bearer token (not JWT).
-	mux.HandleFunc("POST /api/v1/report", h.Report)
-	mux.HandleFunc("POST /api/v1/logs/ingest", h.IngestLogs)
+	// Auth: logout clears the httpOnly session cookie (public — no JWT needed).
+	mux.HandleFunc("POST /api/v1/auth/logout", h.Logout)
+
+	// Agent reporting — bearer token (not JWT). Rate-limited per token hash.
+	mux.HandleFunc("POST /api/v1/report", h.agentReportLimit.agentMiddleware(h.Report))
+	mux.HandleFunc("POST /api/v1/logs/ingest", h.agentIngestLimit.agentMiddleware(h.IngestLogs))
 
 	return mux
 }

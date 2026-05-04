@@ -11,14 +11,15 @@ type Config struct {
 	Port                    string
 	JWTSecret               string
 	DBPath                  string
-	AdminUser               string
-	AdminPass               string
 	RetentionDaysContainers int
 	RawRetentionMinutes     int
 	LogDir                  string
 	LogRetentionDays        int
 	LogMaxFileMB            int
 	LogMaxRotations         int
+	// Optional tuning — have safe defaults, not required in .env.
+	CookieSecure bool
+	MaxSSEConns  int
 }
 
 // Load reads every required env var. Missing or invalid values fail fast —
@@ -53,18 +54,30 @@ func Load() (*Config, error) {
 		}
 	}
 
+	cookieSecure := false
+	if v := strings.TrimSpace(os.Getenv("COOKIE_SECURE")); v == "true" || v == "1" {
+		cookieSecure = true
+	}
+
+	maxSSE := 200
+	if v := strings.TrimSpace(os.Getenv("MAX_SSE_CONNS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxSSE = n
+		}
+	}
+
 	cfg := &Config{
 		Port:                    get("SERVER_PORT"),
 		JWTSecret:               get("JWT_SECRET"),
 		DBPath:                  get("DB_PATH"),
-		AdminUser:               get("ADMIN_USERNAME"),
-		AdminPass:               get("ADMIN_PASSWORD"),
 		RetentionDaysContainers: getInt("RETENTION_DAYS_CONTAINERS"),
 		LogDir:                  get("LOG_DIR"),
 		LogRetentionDays:        getInt("LOG_RETENTION_DAYS"),
 		LogMaxFileMB:            getInt("LOG_MAX_FILE_MB"),
 		LogMaxRotations:         getInt("LOG_MAX_ROTATIONS"),
 		RawRetentionMinutes:     rawRetMin,
+		CookieSecure:            cookieSecure,
+		MaxSSEConns:             maxSSE,
 	}
 
 	if len(missing) > 0 {

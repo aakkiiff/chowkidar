@@ -332,8 +332,12 @@ func gzipFile(src, dst string) error {
 }
 
 // safeName strips characters that would escape the log directory and keeps
-// filenames stable across OSes.
+// filenames stable across OSes. Null bytes cause os.Open to error on Linux
+// and are rejected early rather than propagated.
 func safeName(name string) string {
+	if strings.ContainsRune(name, 0) {
+		return "unnamed"
+	}
 	r := strings.NewReplacer(
 		"/", "_",
 		"\\", "_",

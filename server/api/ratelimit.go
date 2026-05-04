@@ -78,6 +78,26 @@ func (rl *ipLimiter) middleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// agentMiddleware wraps a handler with per-agent-token rate limiting.
+// Keys on the token hash so each registered agent has its own bucket,
+// independent of IP (agents may share NAT).
+func (rl *ipLimiter) agentMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := bearerToken(r)
+		if token == "" {
+			// No token — let the handler reject it as unauthorized.
+			next(w, r)
+			return
+		}
+		if !rl.allow(hashToken(token)) {
+			w.Header().Set("Retry-After", "60")
+			writeJSON(w, http.StatusTooManyRequests, errorResponse{"too many requests"})
+			return
+		}
+		next(w, r)
+	}
+}
+
 // clientIP prefers X-Forwarded-For (first hop) when running behind a proxy,
 // otherwise falls back to RemoteAddr without port.
 func clientIP(r *http.Request) string {

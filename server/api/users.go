@@ -41,8 +41,8 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := strings.TrimSpace(req.Username)
-	if username == "" || len(req.Password) < 6 {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"username and password (≥6 chars) required"})
+	if username == "" || len(req.Password) < 12 || len(req.Password) > 72 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"username and password (12–72 chars) required"})
 		return
 	}
 	if len(username) > 64 {
@@ -118,8 +118,8 @@ func (h *Handler) SetUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
 		return
 	}
-	if len(req.Password) < 6 {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"password must be ≥6 chars"})
+	if len(req.Password) < 12 || len(req.Password) > 72 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"password must be 12–72 chars"})
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -150,8 +150,8 @@ func (h *Handler) ChangeOwnPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
 		return
 	}
-	if len(req.New) < 6 {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"new password must be ≥6 chars"})
+	if len(req.New) < 12 || len(req.New) > 72 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"new password must be 12–72 chars"})
 		return
 	}
 	if req.Current == req.New {
