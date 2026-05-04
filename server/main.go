@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -24,51 +24,54 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
 	loadDotenv()
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		slog.Error("config load failed", "err", err)
+		os.Exit(1)
 	}
 
 	db, err := store.New(cfg.DBPath, time.Duration(cfg.RawRetentionMinutes)*time.Minute)
 	if err != nil {
-		log.Fatalf("database: %v", err)
+		slog.Error("database init failed", "err", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 
-	logs, err := logstore.New(logstore.Config{
+	logStore, err := logstore.New(logstore.Config{
 		Dir:           cfg.LogDir,
 		MaxFileBytes:  int64(cfg.LogMaxFileMB) * 1024 * 1024,
 		MaxRotations:  cfg.LogMaxRotations,
 		RetentionDays: cfg.LogRetentionDays,
 	})
 	if err != nil {
-		log.Fatalf("log store: %v", err)
+		slog.Error("log store init failed", "err", err)
+		os.Exit(1)
 	}
-	defer logs.Close()
+	defer logStore.Close()
 
 	broker := logbroker.New()
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(cfg.AdminPass), bcrypt.DefaultCost)
 	if err != nil {
-		log.Fatalf("hash admin password: %v", err)
+		slog.Error("hash admin password failed", "err", err)
+		os.Exit(1)
 	}
 	if err := db.CreateUser(cfg.AdminUser, string(hash)); err != nil {
-		log.Fatalf("create admin user: %v", err)
+		slog.Error("create admin user failed", "err", err)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Alert evaluator: every 15s reads latest system metrics + rules and
-	// fires webhooks for breaches sustained past the configured window.
-	// The broker fans live events out to SSE subscribers (frontend toasts).
 	alertBroker := alert.NewBroker()
 	evaluator := alert.NewEvaluator(db, db, alert.NewPoster(), alertBroker, 15*time.Second)
 	go evaluator.Run(ctx)
 
-	// Endpoint prober: hourly prune + interval-driven HTTP probes.
 	prober := probe.New(db, alertBroker, alert.NewPoster())
 	go prober.Run(ctx)
 	go func() {
@@ -80,17 +83,15 @@ func main() {
 				return
 			case <-t.C:
 				if err := db.PruneEndpointProbes(); err != nil {
-					log.Printf("probe prune: %v", err)
+					slog.Warn("probe prune failed", "err", err)
 				}
 				if err := db.PruneEndpointIncidents(); err != nil {
-					log.Printf("incident prune: %v", err)
+					slog.Warn("incident prune failed", "err", err)
 				}
 			}
 		}
 	}()
 
-	// Background goroutine: rolls up raw metrics to 1-minute averages and
-	// prunes old data once per minute.
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
@@ -100,21 +101,17 @@ func main() {
 				return
 			case <-ticker.C:
 				if err := db.RollupAndPrune(cfg.RetentionDaysContainers); err != nil {
-					log.Printf("rollup: %v", err)
+					slog.Warn("rollup failed", "err", err)
 				}
 			}
 		}
 	}()
 
-	// One-shot orphan log prune on startup. Catches dirs whose owning agent
-	// was deleted while the server was down — the hourly ticker would leave
-	// them around for up to an hour otherwise.
 	if ids, err := db.AgentIDs(); err == nil {
-		logs.PruneOrphans(ids)
+		logStore.PruneOrphans(ids)
 	}
-	logs.PruneOld()
+	logStore.PruneOld()
 
-	// Periodic flush + retention for log files.
 	go func() {
 		flush := time.NewTicker(5 * time.Second)
 		prune := time.NewTicker(time.Hour)
@@ -125,57 +122,44 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-flush.C:
-				logs.Flush()
+				logStore.Flush()
 			case <-prune.C:
-				logs.PruneOld()
+				logStore.PruneOld()
 				if ids, err := db.AgentIDs(); err == nil {
-					logs.PruneOrphans(ids)
+					logStore.PruneOrphans(ids)
 				}
 			}
 		}
 	}()
 
-	handler := api.NewHandler(db, logs, broker, alertBroker, cfg.JWTSecret)
+	handler := api.NewHandler(db, logStore, broker, alertBroker, cfg.JWTSecret)
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
 		Handler:      handler.Routes(),
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 0, // SSE handlers stream indefinitely; per-handler timeouts guard IO
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
-		// BaseContext wires every request's Context to our shutdown signal.
-		// When `ctx` is cancelled, in-flight SSE loops and the ingest scanner
-		// observe r.Context().Done() and return promptly, letting Shutdown
-		// finish well inside the drain deadline.
-		BaseContext: func(net.Listener) context.Context { return ctx },
+		BaseContext:  func(net.Listener) context.Context { return ctx },
 	}
 
 	go func() {
 		<-ctx.Done()
-		log.Println("shutting down — draining active streams...")
+		slog.Info("shutting down, draining active streams")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("shutdown: %v", err)
+			slog.Warn("shutdown error", "err", err)
 		}
-		// Flush buffered log writes before the process exits so the last
-		// batch from in-flight POSTs lands on disk.
-		logs.Flush()
+		logStore.Flush()
 	}()
 
-	log.Printf("chowkidar server listening on :%s", cfg.Port)
+	slog.Info("chowkidar server listening", "port", cfg.Port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server: %v", err)
+		slog.Error("server error", "err", err)
+		os.Exit(1)
 	}
 }
 
-// loadDotenv tries several predictable locations so the server reads its
-// config regardless of the caller's cwd:
-//   1. $CHOWKIDAR_ENV  (explicit override)
-//   2. ./.env          (cwd — docker compose with workdir)
-//   3. ./server/.env   (running `go run ./server` from repo root)
-//   4. <binary dir>/.env  (installed binary alongside its config)
-// First hit wins. Fails fast if none load AND env vars aren't already
-// present in the process environment (docker `env_file` injection path).
 func loadDotenv() {
 	candidates := []string{}
 	if v := os.Getenv("CHOWKIDAR_ENV"); v != "" {
@@ -190,15 +174,13 @@ func loadDotenv() {
 			continue
 		}
 		if err := godotenv.Load(p); err == nil {
-			log.Printf("loaded env from %s", p)
+			slog.Info("loaded env", "path", p)
 			return
 		}
 	}
-	// No .env file found. Allow continuation only if the docker `env_file`
-	// path already populated process env with our required vars; config.Load
-	// will otherwise fail fast with the missing-key list.
 	if os.Getenv("ADMIN_USERNAME") == "" {
-		log.Fatalf("no .env file found in any candidate location and no env vars set; tried: %v", candidates)
+		slog.Error("no .env file found and no env vars set", "tried", candidates)
+		os.Exit(1)
 	}
-	log.Printf("no .env file found; relying on process environment")
+	slog.Info("no .env file found, relying on process environment")
 }

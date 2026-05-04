@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -46,10 +46,10 @@ func (s *Shipper) Run(ctx context.Context, src <-chan Line) {
 			return
 		}
 		if isClientError(err) {
-			log.Printf("[logs] ship aborted: %v", err)
+			slog.Error("log ship aborted (client error)", "err", err)
 			return
 		}
-		log.Printf("[logs] ship: %v — retry in %v", err, backoff)
+		slog.Warn("log ship failed", "err", err, "retry_in", backoff)
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
@@ -88,7 +88,7 @@ func (s *Shipper) ship(ctx context.Context, src <-chan Line) error {
 				return doPost()
 			}
 			if err := enc.Encode(ln); err != nil {
-				log.Printf("[logs] encode: %v", err)
+				slog.Warn("log encode failed", "err", err)
 				continue
 			}
 			if buf.Len() >= s.batchBuf {

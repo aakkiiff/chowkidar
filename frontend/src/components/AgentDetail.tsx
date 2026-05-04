@@ -94,6 +94,25 @@ function fmtAge(ts: string | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+function fmtUptime(ts: string): string {
+  if (!ts) return '—';
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 0) return '—';
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function fmtNet(mb: number): string {
+  if (mb < 1) return `${(mb * 1024).toFixed(0)} KB`;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
 function withGaps<T extends { x: number; y: number }>(pts: T[]): (T | { x: number; y: null })[] {
   const out: (T | { x: number; y: null })[] = [];
   for (let i = 0; i < pts.length; i++) {
@@ -733,6 +752,9 @@ export default function AgentDetail({
                         <th scope="col" className={`th-sort${sortKey === 'mem' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('mem')}>
                           Memory {sortKey === 'mem' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
                         </th>
+                        <th scope="col">Net I/O</th>
+                        <th scope="col">Uptime</th>
+                        <th scope="col">Restarts</th>
                         <th scope="col">Status</th>
                       </tr>
                     </thead>
@@ -755,6 +777,21 @@ export default function AgentDetail({
                                   <div className="mem-cell-bar-fill" style={{ width: `${Math.min(memPct, 100)}%`, background: barColor(memPct) }} />
                                 </div>
                               )}
+                            </td>
+                            <td className="td-muted td-net">
+                              <span title="Rx">↓{fmtNet(c.net_rx_mb)}</span>
+                              <span className="net-sep"> · </span>
+                              <span title="Tx">↑{fmtNet(c.net_tx_mb)}</span>
+                            </td>
+                            <td className="td-muted">
+                              {c.status.toLowerCase() === 'running' && c.started_at
+                                ? fmtUptime(c.started_at)
+                                : '—'}
+                            </td>
+                            <td>
+                              <span className={c.restart_count > 0 ? 'restart-badge warn' : 'restart-badge'}>
+                                {c.restart_count}
+                              </span>
                             </td>
                             <td>
                               <span className={`ctr-status ${c.status.toLowerCase() === 'running' ? 'up' : 'down'}`}>

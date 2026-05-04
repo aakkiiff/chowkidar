@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,52 +17,58 @@ import (
 )
 
 func main() {
-	// Load .env if present. Missing file is fine — vars may come from
-	// docker-compose env_file injection or the host environment.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
 	if err := godotenv.Load(); err != nil {
-		log.Printf("[boot] no .env loaded (%v) — relying on process env", err)
+		slog.Debug("no .env loaded, relying on process env", "err", err)
 	} else {
-		log.Printf("[boot] loaded .env from cwd")
+		slog.Info("loaded .env from cwd")
 	}
 
 	cfg := config.Load()
 
 	if cfg.Identity == "" {
-		log.Fatal("[boot] AGENT_IDENTITY is required (set in env or .env)")
+		slog.Error("AGENT_IDENTITY is required (set in env or .env)")
+		os.Exit(1)
 	}
 	if cfg.Token == "" {
-		log.Fatal("[boot] AGENT_TOKEN is required (set in env or .env)")
+		slog.Error("AGENT_TOKEN is required (set in env or .env)")
+		os.Exit(1)
 	}
 	if cfg.ServerURL == "" {
-		log.Fatal("[boot] SERVER_URL is required (set in env or .env)")
+		slog.Error("SERVER_URL is required (set in env or .env)")
+		os.Exit(1)
 	}
 
 	systemCollector := collect.NewSystemCollector()
 
 	dockerCollector, err := collect.NewDockerCollector()
 	if err != nil {
-		log.Fatalf("docker collector: %v", err)
+		slog.Error("docker collector init failed", "err", err)
+		os.Exit(1)
 	}
 
 	reporter := report.NewReporter(cfg.ServerURL, cfg.Token)
 	defer reporter.Close()
 
-	log.Printf("[boot] agent started: identity=%s server=%s interval=%v batch=%v/%dB",
-		cfg.Identity, cfg.ServerURL, cfg.CollectInterval, cfg.LogBatchMS, cfg.LogBatchBytes)
+	slog.Info("agent started",
+		"identity", cfg.Identity,
+		"server", cfg.ServerURL,
+		"interval", cfg.CollectInterval,
+		"batch_ms", cfg.LogBatchMS,
+		"batch_bytes", cfg.LogBatchBytes,
+	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	logCollector := logs.New(dockerCollector.Client())
-
 	logShipper := logs.NewShipper(cfg.ServerURL, cfg.Token, cfg.LogBatchMS, cfg.LogBatchBytes)
 	defer logShipper.Close()
 
 	go logCollector.Run(ctx)
 	go logShipper.Run(ctx, logCollector.Out())
 
-	// Surface log drops every 30s. Without this the agent would lose lines
-	// silently under back-pressure (server slow / down + drop-oldest).
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
@@ -74,8 +80,7 @@ func main() {
 			case <-t.C:
 				cur := logCollector.Dropped()
 				if delta := cur - last; delta > 0 {
-					log.Printf("[logs] dropped %d lines in last 30s (total=%d) — server slow or buffer full",
-						delta, cur)
+					slog.Warn("log lines dropped", "delta", delta, "total", cur)
 				}
 				last = cur
 			}
@@ -86,12 +91,12 @@ func main() {
 	defer ticker.Stop()
 
 	inFlight := make(chan struct{}, 1)
-	inFlight <- struct{}{} // start as available
+	inFlight <- struct{}{}
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("shutting down")
+			slog.Info("shutting down")
 			return
 
 		case <-ticker.C:
@@ -105,33 +110,32 @@ func main() {
 					metrics.ServerName = cfg.Identity
 
 					if err := reporter.Send(ctx, metrics); err != nil {
-						log.Printf("[report] send failed: %v", err)
+						slog.Error("report send failed", "err", err)
 					} else {
-						log.Printf("[report] ok: cpu=%.1f%% mem=%.1f/%.1fGB containers=%d",
-							metrics.System.CPUPercent,
-							metrics.System.MemUsedGB, metrics.System.MemTotalGB,
-							len(metrics.Containers))
+						slog.Info("report sent",
+							"cpu_pct", metrics.System.CPUPercent,
+							"mem_used_gb", metrics.System.MemUsedGB,
+							"mem_total_gb", metrics.System.MemTotalGB,
+							"containers", len(metrics.Containers),
+						)
 					}
 				}(token)
 			default:
-				log.Printf("[report] skipping tick — previous collection still in flight")
+				slog.Warn("skipping tick, previous collection in flight")
 			}
 		}
 	}
 }
 
-// collectAll gathers system + docker metrics. Each collector's failure is
-// logged and the report goes ahead with whatever succeeded — losing one
-// signal shouldn't block the other from reaching the server.
 func collectAll(sys *collect.SystemCollector, docker *collect.DockerCollector) *types.Report {
 	systemMetrics, err := sys.Collect()
 	if err != nil {
-		log.Printf("[collect] system: %v (sending zero values)", err)
+		slog.Warn("system collect failed, sending zero values", "err", err)
 	}
 
 	containers, err := docker.Collect()
 	if err != nil {
-		log.Printf("[collect] docker: %v (sending empty container list)", err)
+		slog.Warn("docker collect failed, sending empty list", "err", err)
 		containers = nil
 	}
 

@@ -2,7 +2,7 @@ package config
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 )
@@ -34,7 +34,7 @@ func getEnvInt(key string, fallback int) int {
 	}
 	var n int
 	if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
-		log.Printf("invalid %s=%q, using default %d", key, v, fallback)
+		slog.Warn("invalid config value", "key", key, "value", v, "default", fallback)
 		return fallback
 	}
 	return n
@@ -54,7 +54,7 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Printf("invalid %s=%q, using default %v", key, v, fallback)
+		slog.Warn("invalid config value", "key", key, "value", v, "default", fallback)
 		return fallback
 	}
 	return d

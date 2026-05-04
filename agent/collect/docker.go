@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"runtime"
 	"strings"
 	"sync"
@@ -79,7 +79,7 @@ func (d *DockerCollector) Collect() ([]types.ContainerMetrics, error) {
 
 			m, err := d.collectOne(ctx, id, name, image, status)
 			if err != nil {
-				log.Printf("[docker] %s: stats: %v", id[:12], err)
+				slog.Warn("container stats failed", "container", id[:12], "err", err)
 				return
 			}
 
@@ -93,7 +93,7 @@ func (d *DockerCollector) Collect() ([]types.ContainerMetrics, error) {
 	return results, nil
 }
 
-// collectOne fetches stats for a single container.
+// collectOne fetches stats + inspect data for a single container.
 func (d *DockerCollector) collectOne(ctx context.Context, id, name, image, status string) (types.ContainerMetrics, error) {
 	stats, err := d.cli.ContainerStats(ctx, id, false)
 	if err != nil {
@@ -106,14 +106,35 @@ func (d *DockerCollector) collectOne(ctx context.Context, id, name, image, statu
 		return types.ContainerMetrics{}, fmt.Errorf("decode: %w", err)
 	}
 
+	// Sum network I/O across all interfaces.
+	var netRx, netTx uint64
+	for _, n := range s.Networks {
+		netRx += n.RxBytes
+		netTx += n.TxBytes
+	}
+
+	// Inspect gives restart count and precise start time.
+	restartCount := 0
+	startedAt := ""
+	if info, err := d.cli.ContainerInspect(ctx, id); err == nil {
+		restartCount = info.RestartCount
+		if info.State != nil {
+			startedAt = info.State.StartedAt
+		}
+	}
+
 	return types.ContainerMetrics{
-		Name:       cleanName(name),
-		ID:         id[:12],
-		Image:      getImageName(image),
-		Status:     status,
-		CPUPercent: calculateCPU(s, d.cpuCores),
-		MemUsedMB:  float64(s.MemoryStats.Usage) / 1024 / 1024,
-		MemLimitMB: float64(s.MemoryStats.Limit) / 1024 / 1024,
+		Name:         cleanName(name),
+		ID:           id[:12],
+		Image:        getImageName(image),
+		Status:       status,
+		CPUPercent:   calculateCPU(s, d.cpuCores),
+		MemUsedMB:    float64(s.MemoryStats.Usage) / 1024 / 1024,
+		MemLimitMB:   float64(s.MemoryStats.Limit) / 1024 / 1024,
+		RestartCount: restartCount,
+		StartedAt:    startedAt,
+		NetRxMB:      float64(netRx) / 1024 / 1024,
+		NetTxMB:      float64(netTx) / 1024 / 1024,
 	}, nil
 }
 
@@ -131,9 +152,10 @@ func calculateCPU(s statsJSON, cores int) float64 {
 
 // statsJSON matches the subset of Docker's stats API response we need.
 type statsJSON struct {
-	CPUStats    cpuStats `json:"cpu_stats"`
-	PreCPUStats cpuStats `json:"precpu_stats"`
-	MemoryStats memStats `json:"memory_stats"`
+	CPUStats    cpuStats            `json:"cpu_stats"`
+	PreCPUStats cpuStats            `json:"precpu_stats"`
+	MemoryStats memStats            `json:"memory_stats"`
+	Networks    map[string]netStats `json:"networks"`
 }
 
 type cpuStats struct {
@@ -150,17 +172,27 @@ type memStats struct {
 	Limit uint64 `json:"limit"`
 }
 
+type netStats struct {
+	RxBytes uint64 `json:"rx_bytes"`
+	TxBytes uint64 `json:"tx_bytes"`
+}
+
 func decodeStats(r io.Reader) (statsJSON, error) {
 	var s statsJSON
 	return s, json.NewDecoder(r).Decode(&s)
 }
 
 func getImageName(image string) string {
-	name := strings.Split(image, ":")[0]
-	if idx := strings.LastIndex(name, "/"); idx != -1 {
-		return name[idx+1:]
+	// Strip registry prefix (everything before last "/") but keep the tag.
+	// e.g. "docker.io/library/nginx:1.25" → "nginx:1.25"
+	// e.g. "sha256:abc123..." → "sha256:abc123..." (no slash, returned as-is)
+	colonIdx := strings.Index(image, ":")
+	slashIdx := strings.LastIndex(image, "/")
+	if slashIdx == -1 || (colonIdx != -1 && colonIdx < slashIdx) {
+		// no slash, or colon is before the last slash (digest case) — return as-is
+		return image
 	}
-	return name
+	return image[slashIdx+1:]
 }
 
 // cleanName strips the leading "/" Docker prepends to container names.

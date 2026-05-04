@@ -244,6 +244,10 @@ func (s *Store) migrate() error {
 		`ALTER TABLE alert_rules ADD COLUMN ssl_alert_enabled INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE endpoint_probes ADD COLUMN cert_not_after DATETIME`,
 		`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`,
+		`ALTER TABLE container_metrics ADD COLUMN restart_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE container_metrics ADD COLUMN started_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE container_metrics ADD COLUMN net_rx_mb REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE container_metrics ADD COLUMN net_tx_mb REAL NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate alter: %w", err)
@@ -717,7 +721,8 @@ func (s *Store) latestContainerCount(agentID string) (int, error) {
 func (s *Store) GetLatestContainers(agentID string) ([]ContainerMetrics, error) {
 	rows, err := s.db.Query(`
 		SELECT container_id, COALESCE(container_name, container_id), image, status,
-		       cpu_percent, mem_used_mb, mem_limit_mb
+		       cpu_percent, mem_used_mb, mem_limit_mb,
+		       restart_count, started_at, net_rx_mb, net_tx_mb
 		FROM container_metrics
 		WHERE agent_id = ? AND timestamp = (
 			SELECT MAX(timestamp) FROM container_metrics WHERE agent_id = ?
@@ -732,7 +737,9 @@ func (s *Store) GetLatestContainers(agentID string) ([]ContainerMetrics, error) 
 	var containers []ContainerMetrics
 	for rows.Next() {
 		var c ContainerMetrics
-		if err := rows.Scan(&c.ID, &c.Name, &c.Image, &c.Status, &c.CPUPercent, &c.MemUsedMB, &c.MemLimitMB); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Image, &c.Status,
+			&c.CPUPercent, &c.MemUsedMB, &c.MemLimitMB,
+			&c.RestartCount, &c.StartedAt, &c.NetRxMB, &c.NetTxMB); err != nil {
 			return nil, err
 		}
 		containers = append(containers, c)
@@ -769,8 +776,9 @@ func (s *Store) SaveReport(agentID string, ts time.Time, sys SystemMetrics, cont
 		stmt, err := tx.Prepare(`
 			INSERT INTO container_metrics
 				(agent_id, container_id, container_name, image, status, timestamp,
-				 cpu_percent, mem_used_mb, mem_limit_mb)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+				 cpu_percent, mem_used_mb, mem_limit_mb,
+				 restart_count, started_at, net_rx_mb, net_tx_mb)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("prepare container stmt: %w", err)
 		}
@@ -779,7 +787,8 @@ func (s *Store) SaveReport(agentID string, ts time.Time, sys SystemMetrics, cont
 		tsStr := ts.Format(time.RFC3339)
 		for _, c := range containers {
 			if _, err := stmt.Exec(agentID, c.ID, c.Name, c.Image, c.Status, tsStr,
-				c.CPUPercent, c.MemUsedMB, c.MemLimitMB); err != nil {
+				c.CPUPercent, c.MemUsedMB, c.MemLimitMB,
+				c.RestartCount, c.StartedAt, c.NetRxMB, c.NetTxMB); err != nil {
 				return fmt.Errorf("insert container metrics: %w", err)
 			}
 		}
@@ -1818,13 +1827,17 @@ type SystemMetrics struct {
 }
 
 type ContainerMetrics struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Image      string  `json:"image"`
-	Status     string  `json:"status"`
-	CPUPercent float64 `json:"cpu_percent"`
-	MemUsedMB  float64 `json:"mem_used_mb"`
-	MemLimitMB float64 `json:"mem_limit_mb"`
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Image        string  `json:"image"`
+	Status       string  `json:"status"`
+	CPUPercent   float64 `json:"cpu_percent"`
+	MemUsedMB    float64 `json:"mem_used_mb"`
+	MemLimitMB   float64 `json:"mem_limit_mb"`
+	RestartCount int     `json:"restart_count"`
+	StartedAt    string  `json:"started_at"`
+	NetRxMB      float64 `json:"net_rx_mb"`
+	NetTxMB      float64 `json:"net_tx_mb"`
 }
 
 type ContainerPoint struct {

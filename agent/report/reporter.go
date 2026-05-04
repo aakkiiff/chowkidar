@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -48,8 +48,7 @@ func (r *Reporter) Send(ctx context.Context, metrics *types.Report) error {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			log.Printf("[report] attempt %d/%d after %v (last: %v)",
-				attempt+1, maxRetries+1, delay, lastErr)
+			slog.Warn("report retry", "attempt", attempt+1, "max", maxRetries+1, "delay", delay, "last_err", lastErr)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():

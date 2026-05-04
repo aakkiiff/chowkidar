@@ -260,6 +260,10 @@ export interface Container {
   cpu_percent: number;
   mem_used_mb: number;
   mem_limit_mb: number;
+  restart_count: number;
+  started_at: string;
+  net_rx_mb: number;
+  net_tx_mb: number;
 }
 
 export function getAgentContainers(token: string, agentId: string) {

@@ -8,7 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,7 +80,7 @@ func (c *Collector) refresh(ctx context.Context) {
 
 	containers, err := c.cli.ContainerList(listCtx, container.ListOptions{})
 	if err != nil {
-		log.Printf("[logs] list: %v", err)
+		slog.Warn("container list failed", "err", err)
 		return
 	}
 
@@ -128,17 +128,15 @@ func (c *Collector) startTail(parent context.Context, id, name string) {
 		backoff := 10 * time.Second
 		const maxBackoff = 5 * time.Minute
 		for {
-			log.Printf("[logs] tail start %s (%s)", id[:12], name)
+			slog.Debug("tail start", "container", id[:12], "name", name)
 			err := c.tail(ctx, id, name)
 			switch {
 			case errors.Is(err, context.Canceled):
 				return // container removed or shutdown — stop quietly
 			case err == nil:
-				// Stream closed cleanly (e.g. non-follow logging driver).
-				// Retry with backoff instead of tight-looping.
-				log.Printf("[logs] tail end %s (%s) — stream closed, retry in %s", id[:12], name, backoff)
+				slog.Debug("tail stream closed", "container", id[:12], "name", name, "retry_in", backoff)
 			default:
-				log.Printf("[logs] tail %s (%s): %v — retry in %s", id[:12], name, err, backoff)
+				slog.Warn("tail error", "container", id[:12], "name", name, "err", err, "retry_in", backoff)
 			}
 
 			select {

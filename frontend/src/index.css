@@ -1608,6 +1608,22 @@ input[type="number"]::-webkit-outer-spin-button {
 .ctr-status.up   { color: var(--ok);  background: var(--ok-soft);  border-color: rgba(115, 191, 105, 0.25); }
 .ctr-status.down { color: var(--err); background: var(--err-soft); border-color: rgba(224, 98, 106, 0.25); }
 
+.restart-badge {
+  display: inline-block;
+  min-width: 20px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.restart-badge.warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.td-net { font-size: 12px; white-space: nowrap; }
+.net-sep { color: var(--muted); }
+
 /* =============================================================================
    Container card view
    ============================================================================= */

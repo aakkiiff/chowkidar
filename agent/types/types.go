@@ -11,13 +11,17 @@ type SystemMetrics struct {
 }
 
 type ContainerMetrics struct {
-	Name      string  `json:"name"`
-	ID        string  `json:"id"`
-	Image     string  `json:"image"`
-	Status    string  `json:"status"`
-	CPUPercent float64 `json:"cpu_percent"`
-	MemUsedMB float64 `json:"mem_used_mb"`
-	MemLimitMB float64 `json:"mem_limit_mb"`
+	Name         string  `json:"name"`
+	ID           string  `json:"id"`
+	Image        string  `json:"image"`
+	Status       string  `json:"status"`
+	CPUPercent   float64 `json:"cpu_percent"`
+	MemUsedMB    float64 `json:"mem_used_mb"`
+	MemLimitMB   float64 `json:"mem_limit_mb"`
+	RestartCount int     `json:"restart_count"`
+	StartedAt    string  `json:"started_at"`
+	NetRxMB      float64 `json:"net_rx_mb"`
+	NetTxMB      float64 `json:"net_tx_mb"`
 }
 
 type Report struct {
