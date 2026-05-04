@@ -543,6 +543,9 @@ func (s *Store) ListAgentsWithMetrics(allowed []string) ([]AgentWithMetrics, err
 	q := `SELECT id, hostname, last_seen, alerts_enabled FROM agents`
 	var args []any
 	if allowed != nil {
+		if len(allowed) == 0 {
+			return []AgentWithMetrics{}, nil
+		}
 		ph := make([]string, len(allowed))
 		for i, id := range allowed {
 			ph[i] = "?"
