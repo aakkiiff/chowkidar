@@ -52,8 +52,10 @@ func NewHandler(s *store.Store, ls *logstore.Store, br *logbroker.Broker, ab *al
 		// Per-agent-token rate limiters. Keyed by token hash, not IP.
 		// Report: generous — 30/min covers 10s intervals with headroom.
 		agentReportLimit: newIPLimiter(30, 5, 15*time.Minute),
-		// IngestLogs: limit reconnections — 1 long-lived connection is normal.
-		agentIngestLimit: newIPLimiter(6, 2, 15*time.Minute),
+		// IngestLogs: allow reconnect bursts — initial backoff is 10s so
+		// 6/min burst 2 was too tight. 20/min burst 10 handles server
+		// restarts and container churn without blocking legit agents.
+		agentIngestLimit: newIPLimiter(20, 10, 15*time.Minute),
 	}
 }
 
