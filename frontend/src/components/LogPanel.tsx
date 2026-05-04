@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import { getRecentLogs, streamLogs, type LogLine } from '../api/client';
+import SingleSelect from './SingleSelect';
 
 const MAX_LINES = 5000;
 const PRESETS = [5, 15, 30, 60] as const;
@@ -186,38 +187,32 @@ function LogPanelImpl({ token, agentId, containerName, onExpired }: Props) {
         </span>
 
         <div className="log-controls">
-          <label className={`log-range-label${live ? ' log-range-disabled' : ''}`}>
-            Last
-            <select
-              className="form-input log-range-select"
-              value={isCustom ? 'custom' : String(minutes)}
+          <SingleSelect
+            options={[
+              ...PRESETS.map(m => ({ label: fmtMinutes(m), value: String(m) })),
+              { label: 'Custom…', value: 'custom' },
+            ]}
+            value={isCustom ? 'custom' : String(minutes)}
+            onChange={onSelectRange}
+            disabled={live}
+            placeholder="Range…"
+          />
+          {isCustom && (
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              className="form-input log-custom-input"
+              placeholder="min"
+              value={minutes}
               disabled={live}
-              onChange={e => onSelectRange(e.target.value)}
-              aria-label="Time range"
-              title={live ? 'Time range disabled while live tailing' : undefined}
-            >
-              {PRESETS.map(m => (
-                <option key={m} value={m}>{fmtMinutes(m)}</option>
-              ))}
-              <option value="custom">Custom…</option>
-            </select>
-            {isCustom && (
-              <input
-                type="number"
-                min={1}
-                max={1440}
-                className="form-input log-custom-input"
-                placeholder="min"
-                value={minutes}
-                disabled={live}
-                onChange={e => {
-                  const n = parseInt(e.target.value, 10);
-                  if (Number.isFinite(n) && n > 0) setMinutes(n);
-                }}
-                aria-label="Custom minutes"
-              />
-            )}
-          </label>
+              onChange={e => {
+                const n = parseInt(e.target.value, 10);
+                if (Number.isFinite(n) && n > 0) setMinutes(n);
+              }}
+              aria-label="Custom minutes"
+            />
+          )}
 
           <input
             type="search"

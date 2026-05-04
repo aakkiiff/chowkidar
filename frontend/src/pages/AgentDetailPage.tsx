@@ -4,7 +4,8 @@ import { getAgent, type Agent } from '../api/client';
 import AgentDetail, { type AgentTab } from '../components/AgentDetail';
 import type { AuthCtx } from './Protected';
 
-const TABS: readonly AgentTab[] = ['overview', 'alerts', 'endpoints', 'settings'];
+const TABS: readonly AgentTab[] = ['overview', 'metrics', 'logs', 'alerts', 'endpoints', 'settings'];
+const DEV_TABS: readonly AgentTab[] = ['overview', 'metrics', 'logs'];
 
 function parseTab(raw: string | undefined): AgentTab {
   return (TABS as readonly string[]).includes(raw ?? '') ? (raw as AgentTab) : 'overview';
@@ -43,9 +44,9 @@ export default function AgentDetailPage() {
     navigate(`/agents/${id}/${t}`);
   }, [navigate, id]);
 
-  // Developers can only view the Overview tab; force-redirect anything else.
+  // Developers can view overview, metrics, logs — redirect admin-only tabs.
   useEffect(() => {
-    if (role === 'developer' && tab !== 'overview') {
+    if (role === 'developer' && !(DEV_TABS as readonly string[]).includes(tab)) {
       navigate(`/agents/${id}/overview`, { replace: true });
     }
   }, [role, tab, id, navigate]);
