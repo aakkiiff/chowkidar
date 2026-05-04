@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ── Build (cgo-free, pure Go SQLite via modernc.org/sqlite) ────────────────
-FROM golang:1.25.1-alpine AS builder
+FROM golang:1.25.9-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64

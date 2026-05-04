@@ -1,4 +1,4 @@
-FROM golang:1.25.1-alpine AS builder
+FROM golang:1.25.9-alpine AS builder
 
 # Support cross-compilation (docker buildx --platform linux/arm64, etc.)
 ARG TARGETOS=linux
