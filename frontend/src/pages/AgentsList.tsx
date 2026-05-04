@@ -28,9 +28,9 @@ function fmtGB(gb: number | null): string {
 }
 
 function barColor(p: number): string {
-  if (p < 60) return '#22c55e';
-  if (p < 85) return '#f59e0b';
-  return '#ef4444';
+  if (p < 60) return '#73bf69';
+  if (p < 85) return '#f2cc0c';
+  return '#e0626a';
 }
 
 function timeAgo(iso: string): string {
@@ -143,7 +143,7 @@ export default function AgentsList() {
               return (
                 <div
                   key={agent.id}
-                  className="agent-card"
+                  className={`agent-card status-${status}`}
                   role="button"
                   tabIndex={0}
                   onClick={() => openAgent(agent)}

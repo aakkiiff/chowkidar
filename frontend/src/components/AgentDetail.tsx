@@ -13,6 +13,7 @@ import {
 import { Line } from 'react-chartjs-2';
 import {
   deleteAgent,
+  getAgent,
   getAgentContainers,
   getContainerHistory,
   renameAgent,
@@ -73,6 +74,24 @@ function fmtRangeLabel(m: number): string {
   if (m < 60) return `${m}m`;
   if (m < 1440) return `${m / 60}h`;
   return `${m / 1440}d`;
+}
+
+function barColor(pct: number): string {
+  if (pct >= 80) return 'var(--err)';
+  if (pct >= 60) return 'var(--warn)';
+  return 'var(--ok)';
+}
+
+function fmtAge(ts: string | null): string {
+  if (!ts) return 'never';
+  const diff = Date.now() - new Date(ts).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
 function withGaps<T extends { x: number; y: number }>(pts: T[]): (T | { x: number; y: null })[] {
@@ -212,6 +231,18 @@ export default function AgentDetail({
   const [alertError, setAlertError] = useState<string | null>(null);
   const [confirmDisableAlerts, setConfirmDisableAlerts] = useState(false);
 
+  // ── Live agent state (host metrics, refreshed at container interval) ────────
+  const [liveAgent, setLiveAgent] = useState<Agent>(agent);
+
+  const loadAgent = useCallback(async () => {
+    try {
+      const data = await getAgent(token, agent.id);
+      setLiveAgent(data);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Session expired') onExpired();
+    }
+  }, [token, agent.id, onExpired]);
+
   // ── Load containers (overview list + dropdown options) ───────────────────
   const loadContainers = useCallback(async () => {
     try {
@@ -223,10 +254,11 @@ export default function AgentDetail({
   }, [token, agent.id, onExpired]);
 
   useEffect(() => {
+    loadAgent();
     loadContainers();
-    const id = setInterval(loadContainers, refreshMs);
+    const id = setInterval(() => { void loadAgent(); void loadContainers(); }, refreshMs);
     return () => clearInterval(id);
-  }, [loadContainers, refreshMs]);
+  }, [loadAgent, loadContainers, refreshMs]);
 
   // ── Load metrics for selected containers ─────────────────────────────────
   const loadMetrics = useCallback(async () => {
@@ -279,6 +311,9 @@ export default function AgentDetail({
 
   const containerNames = useMemo(() => containers.map(c => c.name).sort(), [containers]);
 
+  const runningCount = useMemo(() => containers.filter(c => c.status.toLowerCase() === 'running').length, [containers]);
+  const stoppedCount = containers.length - runningCount;
+
   // ── Chart computation ─────────────────────────────────────────────────────
   const nowMs = useMemo(() => Date.now(), [metricsHistory]);
   const rangeMs = metricsRange * 60_000;
@@ -300,6 +335,21 @@ export default function AgentDetail({
   const cpuInCores = cpuMaxMCore >= 1000;
   const memInGB = memMaxMB >= 1024;
 
+  const TICK_COLOR = 'rgba(144,152,161,0.7)';
+  const GRID_COLOR = 'rgba(255,255,255,0.04)';
+  const TOOLTIP_STYLE = {
+    backgroundColor: 'rgba(14,16,22,0.95)',
+    titleColor: '#d8d9da',
+    bodyColor: '#9098a1',
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    padding: 10,
+    cornerRadius: 4,
+    displayColors: true,
+    boxWidth: 10,
+    boxHeight: 10,
+  } as const;
+
   const sharedXScale = useMemo(() => ({
     type: 'linear' as const,
     min: xMin,
@@ -308,9 +358,11 @@ export default function AgentDetail({
       maxTicksLimit: 6,
       maxRotation: 0,
       autoSkip: true,
+      color: TICK_COLOR,
+      font: { size: 11 },
       callback: (v: string | number) => fmtTick(Number(v), metricsRange),
     },
-    grid: { color: 'rgba(128,128,128,0.06)' },
+    grid: { color: GRID_COLOR },
     border: { display: false },
   }), [xMin, xMax, metricsRange]);
 
@@ -331,10 +383,11 @@ export default function AgentDetail({
           borderColor: c.line,
           backgroundColor: c.fill,
           fill: metricsSelected.length === 1,
-          tension: 0.25,
+          tension: 0.35,
           pointRadius: 0,
-          pointHoverRadius: 3,
-          borderWidth: 1.5,
+          pointHoverRadius: 5,
+          pointHoverBackgroundColor: c.line,
+          borderWidth: 2,
           spanGaps: false,
         };
       }),
@@ -348,18 +401,24 @@ export default function AgentDetail({
         y: {
           beginAtZero: true,
           ticks: {
+            color: TICK_COLOR,
+            font: { size: 11 },
             callback: (v: string | number) =>
               cpuInCores ? `${Number(v).toFixed(2)}` : `${v}m`,
             maxTicksLimit: 5,
           },
-          grid: { color: 'rgba(128,128,128,0.1)' },
+          grid: { color: GRID_COLOR },
           border: { display: false },
         },
         x: sharedXScale,
       },
       plugins: {
-        legend: { position: 'top' as const, labels: { boxWidth: 12, padding: 12 } },
+        legend: {
+          position: 'top' as const,
+          labels: { boxWidth: 10, boxHeight: 10, padding: 16, color: '#9098a1', font: { size: 12 } },
+        },
         tooltip: {
+          ...TOOLTIP_STYLE,
           callbacks: {
             title: (items: { parsed: { x: number | null } }[]) => {
               const x = items[0]?.parsed.x;
@@ -368,7 +427,7 @@ export default function AgentDetail({
             label: (ctx: { dataset: { label?: string }; parsed: { y: number | null } }) => {
               const v = ctx.parsed.y ?? 0;
               const val = cpuInCores ? `${v.toFixed(2)} Core` : `${v.toFixed(0)} mCore`;
-              return `${ctx.dataset.label}: ${val}`;
+              return `  ${ctx.dataset.label}: ${val}`;
             },
           },
         },
@@ -391,10 +450,11 @@ export default function AgentDetail({
           borderColor: c.line,
           backgroundColor: c.fill,
           fill: metricsSelected.length === 1,
-          tension: 0.25,
+          tension: 0.35,
           pointRadius: 0,
-          pointHoverRadius: 3,
-          borderWidth: 1.5,
+          pointHoverRadius: 5,
+          pointHoverBackgroundColor: c.line,
+          borderWidth: 2,
           spanGaps: false,
         };
       }),
@@ -408,18 +468,24 @@ export default function AgentDetail({
         y: {
           beginAtZero: true,
           ticks: {
+            color: TICK_COLOR,
+            font: { size: 11 },
             callback: (v: string | number) =>
               memInGB ? `${Number(v).toFixed(2)}` : `${v}`,
             maxTicksLimit: 5,
           },
-          grid: { color: 'rgba(128,128,128,0.1)' },
+          grid: { color: GRID_COLOR },
           border: { display: false },
         },
         x: sharedXScale,
       },
       plugins: {
-        legend: { position: 'top' as const, labels: { boxWidth: 12, padding: 12 } },
+        legend: {
+          position: 'top' as const,
+          labels: { boxWidth: 10, boxHeight: 10, padding: 16, color: '#9098a1', font: { size: 12 } },
+        },
         tooltip: {
+          ...TOOLTIP_STYLE,
           callbacks: {
             title: (items: { parsed: { x: number | null } }[]) => {
               const x = items[0]?.parsed.x;
@@ -428,7 +494,7 @@ export default function AgentDetail({
             label: (ctx: { dataset: { label?: string }; parsed: { y: number | null } }) => {
               const v = ctx.parsed.y ?? 0;
               const val = memInGB ? `${v.toFixed(2)} GB` : `${v.toFixed(0)} MB`;
-              return `${ctx.dataset.label}: ${val}`;
+              return `  ${ctx.dataset.label}: ${val}`;
             },
           },
         },
@@ -553,11 +619,70 @@ export default function AgentDetail({
 
         {/* ── Overview ── */}
         {activeTab === 'overview' && (
-          <div className="detail-section">
-            <div className="chart-header">
-              <span className="detail-section-title">Containers</span>
-              <span className="detail-subtitle" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {containers.length} total
+          <>
+            {/* Agent health card */}
+            <div className="detail-section">
+              <div className="chart-header">
+                <span className="detail-section-title">Agent Health</span>
+                <span className="detail-subtitle">Last seen {fmtAge(liveAgent.last_seen)}</span>
+              </div>
+              <div className="agent-stats-grid">
+                {liveAgent.cpu_percent != null && (
+                  <div className="agent-stat-block">
+                    <span className="agent-stat-label">Host CPU</span>
+                    <span className="agent-stat-val">{liveAgent.cpu_percent.toFixed(1)}<span className="agent-stat-total">%</span></span>
+                    <div className="metric-bar-wrap">
+                      <div className="metric-bar" style={{ width: `${Math.min(liveAgent.cpu_percent, 100)}%`, background: barColor(liveAgent.cpu_percent) }} />
+                    </div>
+                  </div>
+                )}
+                {liveAgent.mem_used_gb != null && liveAgent.mem_total_gb != null && liveAgent.mem_total_gb > 0 && (
+                  <div className="agent-stat-block">
+                    <span className="agent-stat-label">RAM</span>
+                    <span className="agent-stat-val">
+                      {liveAgent.mem_used_gb.toFixed(1)}<span className="agent-stat-total"> / {liveAgent.mem_total_gb.toFixed(1)} GB</span>
+                    </span>
+                    <div className="metric-bar-wrap">
+                      <div className="metric-bar" style={{ width: `${Math.min((liveAgent.mem_used_gb / liveAgent.mem_total_gb) * 100, 100)}%`, background: barColor((liveAgent.mem_used_gb / liveAgent.mem_total_gb) * 100) }} />
+                    </div>
+                  </div>
+                )}
+                {liveAgent.disk_used_gb != null && liveAgent.disk_total_gb != null && liveAgent.disk_total_gb > 0 && (
+                  <div className="agent-stat-block">
+                    <span className="agent-stat-label">Disk</span>
+                    <span className="agent-stat-val">
+                      {liveAgent.disk_used_gb.toFixed(1)}<span className="agent-stat-total"> / {liveAgent.disk_total_gb.toFixed(1)} GB</span>
+                    </span>
+                    <div className="metric-bar-wrap">
+                      <div className="metric-bar" style={{ width: `${Math.min((liveAgent.disk_used_gb / liveAgent.disk_total_gb) * 100, 100)}%`, background: barColor((liveAgent.disk_used_gb / liveAgent.disk_total_gb) * 100) }} />
+                    </div>
+                  </div>
+                )}
+                <div className="agent-stat-block">
+                  <span className="agent-stat-label">Issues</span>
+                  <span className="agent-stat-val" style={{ color: liveAgent.active_issues > 0 ? 'var(--err)' : 'var(--ok)', fontSize: 14 }}>
+                    {liveAgent.active_issues > 0 ? `${liveAgent.active_issues} active` : 'none'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Containers card */}
+            <div className="detail-section">
+              <div className="chart-header">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span className="detail-section-title">Containers</span>
+                  <span className="detail-subtitle">
+                    {containers.length === 0
+                      ? '0 containers'
+                      : <>
+                          {runningCount > 0 && <span style={{ color: 'var(--ok)' }}>{runningCount} running</span>}
+                          {runningCount > 0 && stoppedCount > 0 && <span style={{ color: 'var(--muted)' }}> · </span>}
+                          {stoppedCount > 0 && <span style={{ color: 'var(--err)' }}>{stoppedCount} stopped</span>}
+                        </>
+                    }
+                  </span>
+                </div>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   {[3000, 5000, 10000].map(ms => (
                     <button
@@ -589,52 +714,62 @@ export default function AgentDetail({
                     }}
                   >set</button>
                 </span>
-              </span>
-            </div>
-
-            {containers.length === 0 ? (
-              <div className="dash-empty">No container data yet.</div>
-            ) : (
-              <div className="table-wrap">
-                <table className="container-table" aria-label="Containers">
-                  <thead>
-                    <tr>
-                      <th scope="col" className={`th-sort${sortKey === 'name' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('name')}>
-                        Name {sortKey === 'name' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
-                      </th>
-                      <th scope="col">Image</th>
-                      <th scope="col" className={`th-sort${sortKey === 'cpu' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('cpu')}>
-                        CPU {sortKey === 'cpu' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
-                      </th>
-                      <th scope="col" className={`th-sort${sortKey === 'mem' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('mem')}>
-                        Memory {sortKey === 'mem' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
-                      </th>
-                      <th scope="col">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedContainers.map(c => (
-                      <tr key={c.id}>
-                        <td className="td-name">{c.name}</td>
-                        <td className="td-muted">{c.image}</td>
-                        <td>
-                          <span className={`cpu-badge ${c.cpu_percent >= 80 ? 'high' : c.cpu_percent >= 40 ? 'mid' : ''}`}>
-                            {fmtCPU(percentToMCore(c.cpu_percent))}
-                          </span>
-                        </td>
-                        <td className="td-muted">{fmtMemPair(c.mem_used_mb, c.mem_limit_mb)}</td>
-                        <td>
-                          <span className={`ctr-status ${c.status.toLowerCase() === 'running' ? 'up' : 'down'}`}>
-                            {c.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
-            )}
-          </div>
+
+              {containers.length === 0 ? (
+                <div className="dash-empty">No container data yet.</div>
+              ) : (
+                <div className="table-wrap">
+                  <table className="container-table" aria-label="Containers">
+                    <thead>
+                      <tr>
+                        <th scope="col" className={`th-sort${sortKey === 'name' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('name')}>
+                          Name {sortKey === 'name' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+                        </th>
+                        <th scope="col">Image</th>
+                        <th scope="col" className={`th-sort${sortKey === 'cpu' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('cpu')}>
+                          CPU {sortKey === 'cpu' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+                        </th>
+                        <th scope="col" className={`th-sort${sortKey === 'mem' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('mem')}>
+                          Memory {sortKey === 'mem' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+                        </th>
+                        <th scope="col">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedContainers.map(c => {
+                        const memPct = c.mem_limit_mb > 0 ? (c.mem_used_mb / c.mem_limit_mb) * 100 : 0;
+                        return (
+                          <tr key={c.id}>
+                            <td className="td-name">{c.name}</td>
+                            <td className="td-muted">{c.image}</td>
+                            <td>
+                              <span className={`cpu-badge ${c.cpu_percent >= 80 ? 'high' : c.cpu_percent >= 40 ? 'mid' : ''}`}>
+                                {fmtCPU(percentToMCore(c.cpu_percent))}
+                              </span>
+                            </td>
+                            <td>
+                              <span className="td-muted">{fmtMemPair(c.mem_used_mb, c.mem_limit_mb)}</span>
+                              {c.mem_limit_mb > 0 && (
+                                <div className="mem-cell-bar">
+                                  <div className="mem-cell-bar-fill" style={{ width: `${Math.min(memPct, 100)}%`, background: barColor(memPct) }} />
+                                </div>
+                              )}
+                            </td>
+                            <td>
+                              <span className={`ctr-status ${c.status.toLowerCase() === 'running' ? 'up' : 'down'}`}>
+                                {c.status}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>
         )}
 
         {/* ── Metrics ── */}
@@ -663,7 +798,7 @@ export default function AgentDetail({
               <div className="chart-placeholder" style={{ padding: 32 }}>Loading…</div>
             ) : (
               <div className="chart-grid">
-                <figure className="chart-card">
+                <figure className="chart-card cpu">
                   <figcaption className="chart-card-title">CPU</figcaption>
                   <div className="chart-wrap">
                     {allPoints.length === 0 ? (
@@ -673,7 +808,7 @@ export default function AgentDetail({
                     )}
                   </div>
                 </figure>
-                <figure className="chart-card">
+                <figure className="chart-card ram">
                   <figcaption className="chart-card-title">RAM</figcaption>
                   <div className="chart-wrap">
                     {allPoints.length === 0 ? (
