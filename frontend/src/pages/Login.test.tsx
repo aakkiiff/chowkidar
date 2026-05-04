@@ -50,9 +50,8 @@ describe('Login page', () => {
     });
   });
 
-  it('calls saveSession with token on success', async () => {
+  it('calls saveSession with username and role on success', async () => {
     (client.login as ReturnType<typeof vi.fn>).mockResolvedValue({
-      token: 'tok-abc',
       username: 'admin',
       role: 'admin',
     });
@@ -63,7 +62,7 @@ describe('Login page', () => {
     fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
     await waitFor(() => {
-      expect(client.saveSession).toHaveBeenCalledWith('tok-abc');
+      expect(client.saveSession).toHaveBeenCalledWith('admin', 'admin');
     });
   });
 });

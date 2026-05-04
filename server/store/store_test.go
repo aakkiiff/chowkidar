@@ -18,12 +18,38 @@ func hashTok(token string) string {
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := New(":memory:")
+	s, err := New(":memory:", 0)
 	if err != nil {
 		t.Fatalf("New(:memory:): %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func TestHasUsers_Empty(t *testing.T) {
+	s := newTestStore(t)
+	has, err := s.HasUsers()
+	if err != nil {
+		t.Fatalf("HasUsers: %v", err)
+	}
+	if has {
+		t.Error("expected false on empty store")
+	}
+}
+
+func TestHasUsers_WithUser(t *testing.T) {
+	s := newTestStore(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	if _, err := s.CreateAppUser("admin", string(hash), RoleAdmin); err != nil {
+		t.Fatalf("CreateAppUser: %v", err)
+	}
+	has, err := s.HasUsers()
+	if err != nil {
+		t.Fatalf("HasUsers: %v", err)
+	}
+	if !has {
+		t.Error("expected true after creating a user")
+	}
 }
 
 func TestNew_InMemory(t *testing.T) {
