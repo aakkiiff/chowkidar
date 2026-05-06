@@ -18,10 +18,13 @@ import {
   getContainerHistory,
   renameAgent,
   setAgentAlerts,
+  listProjects,
+  moveAgentToProject,
   type Agent,
   type Container,
   type ContainerPoint,
   type HistoryRange,
+  type Project,
 } from '../api/client';
 import LogPanel from './LogPanel';
 import AlertRuleForm from './AlertRuleForm';
@@ -107,11 +110,6 @@ function fmtUptime(ts: string): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-function fmtNet(mb: number): string {
-  if (mb < 1) return `${(mb * 1024).toFixed(0)} KB`;
-  if (mb < 1024) return `${mb.toFixed(1)} MB`;
-  return `${(mb / 1024).toFixed(2)} GB`;
-}
 
 function withGaps<T extends { x: number; y: number }>(pts: T[]): (T | { x: number; y: null })[] {
   const out: (T | { x: number; y: null })[] = [];
@@ -249,6 +247,44 @@ export default function AgentDetail({
   const [alertSaving, setAlertSaving] = useState(false);
   const [alertError, setAlertError] = useState<string | null>(null);
   const [confirmDisableAlerts, setConfirmDisableAlerts] = useState(false);
+
+  // ── Move-to-project ──────────────────────────────────────────────────────
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveProjects, setMoveProjects] = useState<Project[]>([]);
+  const [moveTarget, setMoveTarget] = useState<string>('');
+  const [moving, setMoving] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!moveOpen) return;
+    listProjects()
+      .then(list => {
+        setMoveProjects(list);
+        setMoveTarget('');
+        setMoveError(null);
+      })
+      .catch(err => setMoveError(err instanceof Error ? err.message : 'Failed to load projects'));
+  }, [moveOpen]);
+
+  const doMove = useCallback(async () => {
+    const pid = Number(moveTarget);
+    if (!pid || pid === agent.project_id) {
+      setMoveError('Pick a different project');
+      return;
+    }
+    setMoving(true);
+    setMoveError(null);
+    try {
+      await moveAgentToProject(agent.id, pid);
+      setMoveOpen(false);
+      // Reload to reflect new project_name in header
+      window.location.reload();
+    } catch (err) {
+      setMoveError(err instanceof Error ? err.message : 'Move failed');
+    } finally {
+      setMoving(false);
+    }
+  }, [agent.id, agent.project_id, moveTarget]);
 
   // ── Live agent state (host metrics, refreshed at container interval) ────────
   const [liveAgent, setLiveAgent] = useState<Agent>(agent);
@@ -752,7 +788,6 @@ export default function AgentDetail({
                         <th scope="col" className={`th-sort${sortKey === 'mem' ? ' th-sort-active' : ''}`} onClick={() => toggleSort('mem')}>
                           Memory {sortKey === 'mem' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
                         </th>
-                        <th scope="col">Net I/O</th>
                         <th scope="col">Uptime</th>
                         <th scope="col">Restarts</th>
                         <th scope="col">Status</th>
@@ -777,11 +812,6 @@ export default function AgentDetail({
                                   <div className="mem-cell-bar-fill" style={{ width: `${Math.min(memPct, 100)}%`, background: barColor(memPct) }} />
                                 </div>
                               )}
-                            </td>
-                            <td className="td-muted td-net">
-                              <span title="Rx">↓{fmtNet(c.net_rx_mb)}</span>
-                              <span className="net-sep"> · </span>
-                              <span title="Tx">↑{fmtNet(c.net_tx_mb)}</span>
                             </td>
                             <td className="td-muted">
                               {c.status.toLowerCase() === 'running' && c.started_at
@@ -940,6 +970,15 @@ export default function AgentDetail({
               </p>
               <button type="button" className="btn-secondary" onClick={openRename}>Rename…</button>
             </div>
+            <div className="detail-section">
+              <div className="chart-header">
+                <span className="detail-section-title">Move to project</span>
+              </div>
+              <p className="settings-hint" style={{ marginTop: 0 }}>
+                Currently in <strong>{agent.project_name}{agent.project_environment ? ` (${agent.project_environment})` : ''}</strong>.
+              </p>
+              <button type="button" className="btn-secondary" onClick={() => setMoveOpen(true)}>Move…</button>
+            </div>
             <div className="detail-section danger-zone">
               <div className="chart-header">
                 <span className="detail-section-title">Danger zone</span>
@@ -978,6 +1017,39 @@ export default function AgentDetail({
               <button type="button" className="btn-secondary" onClick={() => setConfirmDisableAlerts(false)} disabled={alertSaving}>Cancel</button>
               <button type="button" className="btn-danger-solid" onClick={confirmDisable} disabled={alertSaving}>
                 {alertSaving ? 'Disabling…' : 'Disable alerts'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {moveOpen && (
+        <div className="modal-overlay" onClick={() => !moving && setMoveOpen(false)} role="dialog" aria-modal="true">
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h3 className="modal-title">Move to another project</h3>
+            <p className="modal-text">
+              Currently in <strong>{agent.project_name}{agent.project_environment ? ` (${agent.project_environment})` : ''}</strong>.
+            </p>
+            <select
+              className="form-input"
+              value={moveTarget}
+              onChange={e => setMoveTarget(e.target.value)}
+              style={{ width: '100%' }}
+            >
+              <option value="">— pick a project —</option>
+              {moveProjects
+                .filter(p => p.id !== agent.project_id)
+                .map(p => (
+                  <option key={p.id} value={String(p.id)}>
+                    {p.name}{p.environment ? ` (${p.environment})` : ''}
+                  </option>
+                ))}
+            </select>
+            {moveError && <div className="login-error" style={{ marginTop: 12 }}>{moveError}</div>}
+            <div className="modal-actions">
+              <button type="button" className="btn-secondary" onClick={() => setMoveOpen(false)} disabled={moving}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={doMove} disabled={moving || !moveTarget}>
+                {moving ? 'Moving…' : 'Move'}
               </button>
             </div>
           </div>

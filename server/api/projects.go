@@ -16,9 +16,25 @@ const (
 	maxProjectEnv  = 32
 )
 
-// ListProjects returns all projects with their agent counts.
+// ListProjects returns projects visible to the caller. Admins see everything;
+// developers see only projects that contain at least one agent they can access.
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
-	projects, err := h.store.ListProjects()
+	role, _ := r.Context().Value(ctxKeyRole).(string)
+	if role == RoleAdmin {
+		projects, err := h.store.ListProjects()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to list projects"})
+			return
+		}
+		writeJSON(w, http.StatusOK, projects)
+		return
+	}
+	allowed, err := h.userAllowedAgents(r)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to resolve permissions"})
+		return
+	}
+	projects, err := h.store.ListProjectsForAgents(allowed)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to list projects"})
 		return
@@ -26,7 +42,9 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projects)
 }
 
-// GetProject returns one project by id.
+// GetProject returns one project by id. Developers get 404 if they have no
+// agent access in the project — same response as a missing project, to avoid
+// leaking project existence.
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseProjectID(w, r)
 	if !ok {
@@ -40,6 +58,23 @@ func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to fetch project"})
 		return
+	}
+	role, _ := r.Context().Value(ctxKeyRole).(string)
+	if role != RoleAdmin {
+		allowed, err := h.userAllowedAgents(r)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to resolve permissions"})
+			return
+		}
+		hasAccess, err := h.store.ProjectHasAnyOfAgents(id, allowed)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to check access"})
+			return
+		}
+		if !hasAccess {
+			writeJSON(w, http.StatusNotFound, errorResponse{"project not found"})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, p)
 }
@@ -169,6 +204,44 @@ func (h *Handler) ProjectAgents(w http.ResponseWriter, r *http.Request) {
 		resp = append(resp, toAgentResponse(a))
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// MoveAgent reassigns an agent to a different project. Admin only.
+func (h *Handler) MoveAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	if agentID == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"agent id required"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	var req struct {
+		ProjectID int64 `json:"project_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
+		return
+	}
+	if req.ProjectID <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"project_id required"})
+		return
+	}
+	if _, err := h.store.GetProject(req.ProjectID); err != nil {
+		if err == sql.ErrNoRows {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"project not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to verify project"})
+		return
+	}
+	if err := h.store.MoveAgentToProject(agentID, req.ProjectID); err != nil {
+		if err == sql.ErrNoRows {
+			writeJSON(w, http.StatusNotFound, errorResponse{"agent not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to move agent"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func parseProjectID(w http.ResponseWriter, r *http.Request) (int64, bool) {

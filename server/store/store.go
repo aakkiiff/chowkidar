@@ -364,6 +364,64 @@ func (s *Store) ListProjects() ([]Project, error) {
 	return out, rows.Err()
 }
 
+// ListProjectsForAgents returns only projects that contain at least one agent
+// from the supplied list. Used to scope projects visible to developer users.
+// agent_count reflects only the visible agents, not the global total.
+func (s *Store) ListProjectsForAgents(agentIDs []string) ([]Project, error) {
+	if len(agentIDs) == 0 {
+		return []Project{}, nil
+	}
+	ph := make([]string, len(agentIDs))
+	args := make([]any, 0, len(agentIDs))
+	for i, id := range agentIDs {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+	q := `SELECT p.id, p.name, p.environment, p.created_at,
+			COUNT(a.id) AS agent_count
+		FROM projects p
+		INNER JOIN agents a ON a.project_id = p.id
+		WHERE a.id IN (` + strings.Join(ph, ",") + `)
+		GROUP BY p.id, p.name, p.environment, p.created_at
+		ORDER BY p.name ASC, p.environment ASC`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Project{}
+	for rows.Next() {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.Name, &p.Environment, &p.CreatedAt, &p.AgentCount); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ProjectHasAnyOfAgents reports whether any of the given agent IDs belong to
+// the project. Used to authorize a developer's access to a single project page.
+func (s *Store) ProjectHasAnyOfAgents(projectID int64, agentIDs []string) (bool, error) {
+	if len(agentIDs) == 0 {
+		return false, nil
+	}
+	ph := make([]string, len(agentIDs))
+	args := make([]any, 0, len(agentIDs)+1)
+	args = append(args, projectID)
+	for i, id := range agentIDs {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+	q := `SELECT 1 FROM agents WHERE project_id = ? AND id IN (` + strings.Join(ph, ",") + `) LIMIT 1`
+	var n int
+	err := s.db.QueryRow(q, args...).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // UpdateProject changes name + environment. Returns sql.ErrNoRows if missing,
 // UNIQUE error on (name,environment) collision.
 func (s *Store) UpdateProject(id int64, name, environment string) error {

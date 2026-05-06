@@ -228,6 +228,65 @@ func TestProjects_DeveloperCanRead(t *testing.T) {
 	}
 }
 
+func TestProjects_DeveloperOnlySeesPermittedProjects(t *testing.T) {
+	mux, s := setupHandler(t)
+	cookie := adminCookie(t, mux)
+	devCookie := developerCookie(t, mux, s)
+
+	// Two projects, two agents (one in each).
+	pidA := createProject(t, mux, cookie)
+	pidB := createProject(t, mux, cookie)
+
+	wA := doJSON(t, mux, "POST", "/api/v1/agents/register", cookie, map[string]any{
+		"hostname": "host-A", "project_id": pidA,
+	})
+	var regA map[string]string
+	json.NewDecoder(wA.Body).Decode(&regA)
+
+	doJSON(t, mux, "POST", "/api/v1/agents/register", cookie, map[string]any{
+		"hostname": "host-B", "project_id": pidB,
+	})
+
+	// Grant the developer access only to host-A (in project A).
+	var devID int64
+	s.GetUser("devuser") // ensures devuser exists
+	users, _ := s.ListUsers()
+	for _, u := range users {
+		if u.Username == "devuser" {
+			devID = u.ID
+		}
+	}
+	if err := s.SetUserAgentPerms(devID, []string{regA["agent_id"]}); err != nil {
+		t.Fatalf("SetUserAgentPerms: %v", err)
+	}
+
+	// Developer's project list should contain only project A.
+	wl := doJSON(t, mux, "GET", "/api/v1/projects", devCookie, nil)
+	if wl.Code != http.StatusOK {
+		t.Fatalf("ListProjects: %d %s", wl.Code, wl.Body.String())
+	}
+	var list []map[string]any
+	json.NewDecoder(wl.Body).Decode(&list)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 visible project, got %d", len(list))
+	}
+	if int64(list[0]["id"].(float64)) != pidA {
+		t.Errorf("expected project A visible, got id %v", list[0]["id"])
+	}
+
+	// Developer should be able to GET project A.
+	wgA := doJSON(t, mux, "GET", fmt.Sprintf("/api/v1/projects/%d", pidA), devCookie, nil)
+	if wgA.Code != http.StatusOK {
+		t.Errorf("expected 200 for permitted project, got %d", wgA.Code)
+	}
+
+	// Developer should get 404 on project B (existence hidden).
+	wgB := doJSON(t, mux, "GET", fmt.Sprintf("/api/v1/projects/%d", pidB), devCookie, nil)
+	if wgB.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for forbidden project, got %d", wgB.Code)
+	}
+}
+
 func TestRegisterAgent_MissingProjectID_Returns400(t *testing.T) {
 	mux, _ := setupHandler(t)
 	cookie := adminCookie(t, mux)
@@ -250,6 +309,68 @@ func TestRegisterAgent_InvalidProjectID_Returns400(t *testing.T) {
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid project_id, got %d", w.Code)
+	}
+}
+
+func TestMoveAgent_BetweenProjects(t *testing.T) {
+	mux, _ := setupHandler(t)
+	cookie := adminCookie(t, mux)
+
+	pid1 := createProject(t, mux, cookie)
+	pid2 := createProject(t, mux, cookie)
+
+	wr := doJSON(t, mux, "POST", "/api/v1/agents/register", cookie, map[string]any{
+		"hostname": "movable-agent", "project_id": pid1,
+	})
+	var reg map[string]string
+	json.NewDecoder(wr.Body).Decode(&reg)
+	agentID := reg["agent_id"]
+
+	w := doJSON(t, mux, "PUT", fmt.Sprintf("/api/v1/agents/%s/project", agentID), cookie, map[string]any{
+		"project_id": pid2,
+	})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("MoveAgent: expected 204, got %d %s", w.Code, w.Body.String())
+	}
+
+	// Verify agent now in pid2.
+	wg := doJSON(t, mux, "GET", "/api/v1/agents/"+agentID, cookie, nil)
+	var a map[string]any
+	json.NewDecoder(wg.Body).Decode(&a)
+	if int64(a["project_id"].(float64)) != pid2 {
+		t.Errorf("expected agent in project %d, got %v", pid2, a["project_id"])
+	}
+
+	// And not in pid1's listing.
+	wl := doJSON(t, mux, "GET", fmt.Sprintf("/api/v1/projects/%d/agents", pid1), cookie, nil)
+	var list []any
+	json.NewDecoder(wl.Body).Decode(&list)
+	if len(list) != 0 {
+		t.Errorf("expected 0 agents in source project, got %d", len(list))
+	}
+}
+
+func TestMoveAgent_InvalidProject_Returns400(t *testing.T) {
+	mux, _ := setupHandler(t)
+	cookie := adminCookie(t, mux)
+	agentID, _ := registerAgent(t, mux, cookie, "stuck-host")
+
+	w := doJSON(t, mux, "PUT", "/api/v1/agents/"+agentID+"/project", cookie, map[string]any{
+		"project_id": 99999,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestMoveAgent_DeveloperForbidden(t *testing.T) {
+	mux, s := setupHandler(t)
+	devCookie := developerCookie(t, mux, s)
+	w := doJSON(t, mux, "PUT", "/api/v1/agents/anything/project", devCookie, map[string]any{
+		"project_id": 1,
+	})
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
 	}
 }
 

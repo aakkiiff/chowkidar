@@ -33,6 +33,7 @@ func (h *Handler) Routes() http.Handler {
 	// Admin-only: agent CRUD + all configuration surfaces.
 	mux.HandleFunc("POST /api/v1/agents/register", h.requireAdmin(h.RegisterAgent))
 	mux.HandleFunc("PATCH /api/v1/agents/{id}", h.requireAdmin(h.RenameAgent))
+	mux.HandleFunc("PUT /api/v1/agents/{id}/project", h.requireAdmin(h.MoveAgent))
 	mux.HandleFunc("DELETE /api/v1/agents/{id}", h.requireAdmin(h.DeleteAgent))
 	mux.HandleFunc("PATCH /api/v1/agents/{id}/alerts", h.requireAdmin(h.SetAgentAlerts))
 	mux.HandleFunc("GET /api/v1/agents/{id}/alert-rule", h.requireAdmin(h.GetAlertRule))

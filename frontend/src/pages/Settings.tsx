@@ -249,7 +249,14 @@ export default function Settings() {
     }
   };
 
-  const agentName = (id: string) => agents.find(a => a.id === id)?.hostname ?? id.slice(0, 12);
+  const agentName = (id: string) => {
+    const a = agents.find(x => x.id === id);
+    if (!a) return id.slice(0, 12);
+    const proj = a.project_environment
+      ? `${a.project_name} (${a.project_environment})`
+      : a.project_name;
+    return proj ? `${proj} — ${a.hostname}` : a.hostname;
+  };
 
   return (
     <main className="dash-main">
@@ -564,16 +571,22 @@ export default function Settings() {
                 <span className="settings-hint" style={{ marginBottom: 0 }}>No agents registered yet — you can assign access later.</span>
               ) : (
                 <div className="agent-access-picker-grid">
-                  {agents.map(a => (
-                    <label key={a.id} className={`agent-chip${newUserAgentIds.includes(a.id) ? ' selected' : ''}`}>
-                      <input
-                        type="checkbox"
-                        checked={newUserAgentIds.includes(a.id)}
-                        onChange={() => toggleAgent(a.id, newUserAgentIds, setNewUserAgentIds)}
-                      />
-                      {a.hostname}
-                    </label>
-                  ))}
+                  {agents.map(a => {
+                    const proj = a.project_environment
+                      ? `${a.project_name} (${a.project_environment})`
+                      : a.project_name;
+                    const label = proj ? `${proj} — ${a.hostname}` : a.hostname;
+                    return (
+                      <label key={a.id} className={`agent-chip${newUserAgentIds.includes(a.id) ? ' selected' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={newUserAgentIds.includes(a.id)}
+                          onChange={() => toggleAgent(a.id, newUserAgentIds, setNewUserAgentIds)}
+                        />
+                        {label}
+                      </label>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -679,16 +692,22 @@ export default function Settings() {
                   {editingAgentIds.length > 0 && ` · ${editingAgentIds.length} selected`}
                 </div>
                 <div className="agent-access-picker-grid">
-                  {agents.map(a => (
-                    <label key={a.id} className={`agent-chip${editingAgentIds.includes(a.id) ? ' selected' : ''}`}>
-                      <input
-                        type="checkbox"
-                        checked={editingAgentIds.includes(a.id)}
-                        onChange={() => toggleAgent(a.id, editingAgentIds, setEditingAgentIds)}
-                      />
-                      {a.hostname}
-                    </label>
-                  ))}
+                  {agents.map(a => {
+                    const proj = a.project_environment
+                      ? `${a.project_name} (${a.project_environment})`
+                      : a.project_name;
+                    const label = proj ? `${proj} — ${a.hostname}` : a.hostname;
+                    return (
+                      <label key={a.id} className={`agent-chip${editingAgentIds.includes(a.id) ? ' selected' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={editingAgentIds.includes(a.id)}
+                          onChange={() => toggleAgent(a.id, editingAgentIds, setEditingAgentIds)}
+                        />
+                        {label}
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
             )}

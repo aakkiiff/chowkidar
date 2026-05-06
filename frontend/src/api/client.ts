@@ -215,6 +215,20 @@ export function getAgent(_token: string, agentId: string) {
   return request<Agent>(`/agents/${agentId}`);
 }
 
+export async function moveAgentToProject(agentId: string, projectId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/agents/${agentId}/project`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Move failed');
+  }
+}
+
 export function registerAgent(_token: string, hostname: string, projectId: number) {
   return request<{ agent_id: string; token: string }>('/agents/register', {
     method: 'POST',
