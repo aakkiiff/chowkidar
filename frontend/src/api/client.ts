@@ -140,6 +140,54 @@ export async function setUserAgents(_token: string, userId: number, agentIds: st
   }
 }
 
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+export interface Project {
+  id: number;
+  name: string;
+  environment: string;
+  created_at: string;
+  agent_count: number;
+}
+
+export function listProjects() {
+  return request<Project[]>('/projects');
+}
+
+export function getProject(id: number) {
+  return request<Project>(`/projects/${id}`);
+}
+
+export function listProjectAgents(id: number) {
+  return request<Agent[]>(`/projects/${id}/agents`);
+}
+
+export function createProject(name: string, environment: string) {
+  return request<Project>('/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name, environment }),
+  });
+}
+
+export function updateProject(id: number, name: string, environment: string) {
+  return request<Project>(`/projects/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name, environment }),
+  });
+}
+
+export async function deleteProject(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${id}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Delete failed');
+  }
+}
+
 // ── Agents ────────────────────────────────────────────────────────────────────
 
 export interface Agent {
@@ -154,6 +202,9 @@ export interface Agent {
   container_count: number;
   alerts_enabled: boolean;
   active_issues: number;
+  project_id: number;
+  project_name: string;
+  project_environment: string;
 }
 
 export function listAgents(_token: string) {
@@ -164,10 +215,10 @@ export function getAgent(_token: string, agentId: string) {
   return request<Agent>(`/agents/${agentId}`);
 }
 
-export function registerAgent(_token: string, hostname: string) {
+export function registerAgent(_token: string, hostname: string, projectId: number) {
   return request<{ agent_id: string; token: string }>('/agents/register', {
     method: 'POST',
-    body: JSON.stringify({ hostname }),
+    body: JSON.stringify({ hostname, project_id: projectId }),
   });
 }
 

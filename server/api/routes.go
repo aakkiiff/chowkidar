@@ -15,6 +15,14 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/me", h.requireJWT(h.Me))
 	mux.HandleFunc("POST /api/v1/auth/password", h.requireJWT(h.ChangeOwnPassword))
 	mux.HandleFunc("GET /api/v1/agents", h.requireJWT(h.ListAgents))
+
+	// Projects — read available to any authenticated user; write admin-only.
+	mux.HandleFunc("GET /api/v1/projects", h.requireJWT(h.ListProjects))
+	mux.HandleFunc("GET /api/v1/projects/{id}", h.requireJWT(h.GetProject))
+	mux.HandleFunc("GET /api/v1/projects/{id}/agents", h.requireJWT(h.ProjectAgents))
+	mux.HandleFunc("POST /api/v1/projects", h.requireAdmin(h.CreateProject))
+	mux.HandleFunc("PATCH /api/v1/projects/{id}", h.requireAdmin(h.UpdateProject))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", h.requireAdmin(h.DeleteProject))
 	mux.HandleFunc("GET /api/v1/agents/{id}", h.requireJWT(h.GetAgent))
 	mux.HandleFunc("GET /api/v1/agents/{id}/containers", h.requireJWT(h.AgentContainers))
 	mux.HandleFunc("GET /api/v1/agents/{id}/containers/{name}/history", h.requireJWT(h.ContainerHistory))

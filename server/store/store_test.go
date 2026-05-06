@@ -26,6 +26,20 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+// projectID creates a fresh test project and returns its id. Each call uses
+// the test name + a counter so multiple projects in one test don't collide.
+var projectCounter int64
+
+func projectID(t *testing.T, s *Store) int64 {
+	t.Helper()
+	projectCounter++
+	p, err := s.CreateProject(fmt.Sprintf("test-%s-%d", t.Name(), projectCounter), "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	return p.ID
+}
+
 func TestHasUsers_Empty(t *testing.T) {
 	s := newTestStore(t)
 	has, err := s.HasUsers()
@@ -62,7 +76,7 @@ func TestNew_InMemory(t *testing.T) {
 func TestCreateAgent_ValidateToken(t *testing.T) {
 	s := newTestStore(t)
 	token := "agt_testtoken123"
-	id, err := s.CreateAgent("myhost", hashTok(token))
+	id, err := s.CreateAgent("myhost", hashTok(token), projectID(t, s))
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
@@ -91,7 +105,7 @@ func TestListAgentsWithMetrics_InitiallyEmpty(t *testing.T) {
 
 func TestSaveReport_GetLatestContainers(t *testing.T) {
 	s := newTestStore(t)
-	id, err := s.CreateAgent("reporthost", hashTok("tok1"))
+	id, err := s.CreateAgent("reporthost", hashTok("tok1"), projectID(t, s))
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
@@ -188,8 +202,8 @@ func TestSetUserAgentPerms_GetUserAgentPerms(t *testing.T) {
 	s := newTestStore(t)
 	hash, _ := bcrypt.GenerateFromPassword([]byte("p"), bcrypt.MinCost)
 	u, _ := s.CreateAppUser("devperm", string(hash), RoleDeveloper)
-	aid1, _ := s.CreateAgent("agent1", hashTok("t1"))
-	aid2, _ := s.CreateAgent("agent2", hashTok("t2"))
+	aid1, _ := s.CreateAgent("agent1", hashTok("t1"), projectID(t, s))
+	aid2, _ := s.CreateAgent("agent2", hashTok("t2"), projectID(t, s))
 
 	if err := s.SetUserAgentPerms(u.ID, []string{aid1, aid2}); err != nil {
 		t.Fatalf("SetUserAgentPerms: %v", err)
@@ -245,7 +259,7 @@ func TestSetAlertSettings_GetAlertSettings(t *testing.T) {
 
 func TestCreateEndpoint_ListEndpoints_DeleteEndpoint(t *testing.T) {
 	s := newTestStore(t)
-	agentID, _ := s.CreateAgent("ephost", hashTok("eptok"))
+	agentID, _ := s.CreateAgent("ephost", hashTok("eptok"), projectID(t, s))
 	ep, err := s.CreateEndpoint(agentID, "homepage", "https://example.com")
 	if err != nil {
 		t.Fatalf("CreateEndpoint: %v", err)
@@ -271,7 +285,7 @@ func TestCreateEndpoint_ListEndpoints_DeleteEndpoint(t *testing.T) {
 
 func TestRecordProbe_GetEndpointProbes(t *testing.T) {
 	s := newTestStore(t)
-	agentID, _ := s.CreateAgent("probehost", hashTok("probetok"))
+	agentID, _ := s.CreateAgent("probehost", hashTok("probetok"), projectID(t, s))
 	ep, _ := s.CreateEndpoint(agentID, "health", "https://example.com/health")
 	now := time.Now().UTC().Truncate(time.Second)
 	probe := EndpointProbe{
@@ -298,7 +312,7 @@ func TestRecordProbe_GetEndpointProbes(t *testing.T) {
 
 func TestOpenIncident_CloseIncident_ListIncidents(t *testing.T) {
 	s := newTestStore(t)
-	agentID, _ := s.CreateAgent("inchost", hashTok("inctok"))
+	agentID, _ := s.CreateAgent("inchost", hashTok("inctok"), projectID(t, s))
 	ep, _ := s.CreateEndpoint(agentID, "api", "https://example.com/api")
 	start := time.Now().Add(-5 * time.Minute).UTC()
 
@@ -327,7 +341,7 @@ func TestOpenIncident_CloseIncident_ListIncidents(t *testing.T) {
 
 func TestComputeUptime_NoIncidents_Returns100(t *testing.T) {
 	s := newTestStore(t)
-	agentID, _ := s.CreateAgent("uptimehost", hashTok("uptimetok"))
+	agentID, _ := s.CreateAgent("uptimehost", hashTok("uptimetok"), projectID(t, s))
 	ep, _ := s.CreateEndpoint(agentID, "check", "https://example.com")
 	start := time.Now().Add(-1 * time.Hour)
 	end := time.Now()
@@ -345,7 +359,7 @@ func TestComputeUptime_NoIncidents_Returns100(t *testing.T) {
 
 func TestRenameAgent(t *testing.T) {
 	s := newTestStore(t)
-	id, _ := s.CreateAgent("oldname", hashTok("rt1"))
+	id, _ := s.CreateAgent("oldname", hashTok("rt1"), projectID(t, s))
 	if err := s.RenameAgent(id, "newname"); err != nil {
 		t.Fatalf("RenameAgent: %v", err)
 	}
@@ -360,12 +374,144 @@ func TestRenameAgent(t *testing.T) {
 
 func TestDeleteAgent(t *testing.T) {
 	s := newTestStore(t)
-	id, _ := s.CreateAgent("delhost", hashTok("dt1"))
+	id, _ := s.CreateAgent("delhost", hashTok("dt1"), projectID(t, s))
 	if err := s.DeleteAgent(id); err != nil {
 		t.Fatalf("DeleteAgent: %v", err)
 	}
 	_, err := s.GetAgentWithMetrics(id)
 	if err != sql.ErrNoRows {
 		t.Errorf("expected ErrNoRows after delete, got %v", err)
+	}
+}
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+func TestProjects_CreateGet(t *testing.T) {
+	s := newTestStore(t)
+	p, err := s.CreateProject("backend", "prod")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if p.Name != "backend" || p.Environment != "prod" {
+		t.Errorf("got %+v", p)
+	}
+	got, err := s.GetProject(p.ID)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.ID != p.ID {
+		t.Errorf("expected id %d, got %d", p.ID, got.ID)
+	}
+}
+
+func TestProjects_DuplicateNameEnv_Conflict(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateProject("dup", "prod"); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	_, err := s.CreateProject("dup", "prod")
+	if err == nil {
+		t.Fatal("expected UNIQUE error")
+	}
+}
+
+func TestProjects_SameName_DifferentEnv_OK(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateProject("myapp", "prod"); err != nil {
+		t.Fatalf("prod: %v", err)
+	}
+	if _, err := s.CreateProject("myapp", "staging"); err != nil {
+		t.Errorf("staging should be allowed: %v", err)
+	}
+}
+
+func TestProjects_List_AgentCount(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.CreateProject("p1", "")
+	if _, err := s.CreateAgent("h1", hashTok("x1"), p.ID); err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if _, err := s.CreateAgent("h2", hashTok("x2"), p.ID); err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	list, err := s.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(list))
+	}
+	if list[0].AgentCount != 2 {
+		t.Errorf("expected agent_count=2, got %d", list[0].AgentCount)
+	}
+}
+
+func TestProjects_Update(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.CreateProject("old-name", "dev")
+	if err := s.UpdateProject(p.ID, "new-name", "prod"); err != nil {
+		t.Fatalf("UpdateProject: %v", err)
+	}
+	got, _ := s.GetProject(p.ID)
+	if got.Name != "new-name" || got.Environment != "prod" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestProjects_Delete_BlockedWithAgents(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.CreateProject("with-agents", "")
+	s.CreateAgent("h", hashTok("t"), p.ID)
+	err := s.DeleteProject(p.ID)
+	if err != ErrProjectHasAgents {
+		t.Errorf("expected ErrProjectHasAgents, got %v", err)
+	}
+}
+
+func TestProjects_Delete_Empty(t *testing.T) {
+	s := newTestStore(t)
+	p, _ := s.CreateProject("empty", "")
+	if err := s.DeleteProject(p.ID); err != nil {
+		t.Errorf("expected nil err, got %v", err)
+	}
+}
+
+func TestProjects_BackfillDefault_OnExistingAgents(t *testing.T) {
+	s := newTestStore(t)
+	// Insert agent directly with NULL project_id to simulate pre-migration row.
+	if _, err := s.db.Exec(`INSERT INTO agents (id, hostname, token_hash) VALUES ('legacy-id', 'legacy-host', 'h')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := s.backfillDefaultProject(); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	// Default project should exist and the legacy agent should be assigned to it.
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE project_id IS NULL`).Scan(&count)
+	if count != 0 {
+		t.Errorf("expected 0 agents with NULL project_id, got %d", count)
+	}
+	var defID int64
+	if err := s.db.QueryRow(`SELECT id FROM projects WHERE name = 'default'`).Scan(&defID); err != nil {
+		t.Fatalf("default project not created: %v", err)
+	}
+}
+
+func TestListAgentsByProject_FiltersToProject(t *testing.T) {
+	s := newTestStore(t)
+	p1, _ := s.CreateProject("p1", "")
+	p2, _ := s.CreateProject("p2", "")
+	s.CreateAgent("h1", hashTok("k1"), p1.ID)
+	s.CreateAgent("h2", hashTok("k2"), p2.ID)
+
+	list, err := s.ListAgentsByProject(p1.ID, nil)
+	if err != nil {
+		t.Fatalf("ListAgentsByProject: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1, got %d", len(list))
+	}
+	if list[0].Hostname != "h1" {
+		t.Errorf("expected h1, got %s", list[0].Hostname)
 	}
 }

@@ -67,6 +67,16 @@ func (s *Store) migrate() error {
 	defer tx.Rollback()
 
 	stmts := []string{
+		// Projects group agents by deployment context (e.g. "Backend Services" / prod).
+		// (name, environment) is the human handle; deletion is blocked when agents
+		// still belong to a project (enforced in DeleteProject, not at DB level).
+		`CREATE TABLE IF NOT EXISTS projects (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL,
+			environment TEXT NOT NULL DEFAULT '',
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name_env ON projects(name, environment)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
 			username   TEXT UNIQUE NOT NULL,
@@ -248,10 +258,17 @@ func (s *Store) migrate() error {
 		`ALTER TABLE container_metrics ADD COLUMN started_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE container_metrics ADD COLUMN net_rx_mb REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE container_metrics ADD COLUMN net_tx_mb REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE agents ADD COLUMN project_id INTEGER`,
 	} {
 		if _, err := s.db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate alter: %w", err)
 		}
+	}
+
+	// Backfill: assign every agent with NULL project_id to a "default" project.
+	// Safe to run on every startup — only matches orphan rows.
+	if err := s.backfillDefaultProject(); err != nil {
+		return fmt.Errorf("backfill default project: %w", err)
 	}
 		// Grant existing developers access to all existing agents so they don't
 		// lose visibility on upgrade. Safe to re-run (INSERT OR IGNORE).
@@ -260,6 +277,130 @@ func (s *Store) migrate() error {
 
 	return nil
 }
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+// backfillDefaultProject creates a "default" project (env "") if any agents
+// still have NULL project_id, then assigns those orphan agents to it.
+// Idempotent — only the first migration after the schema change does work.
+func (s *Store) backfillDefaultProject() error {
+	var orphans int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE project_id IS NULL`).Scan(&orphans); err != nil {
+		return err
+	}
+	if orphans == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var pid int64
+	err = tx.QueryRow(`SELECT id FROM projects WHERE name = 'default' AND environment = ''`).Scan(&pid)
+	if err == sql.ErrNoRows {
+		res, ierr := tx.Exec(`INSERT INTO projects (name, environment) VALUES ('default', '')`)
+		if ierr != nil {
+			return ierr
+		}
+		pid, _ = res.LastInsertId()
+	} else if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE agents SET project_id = ? WHERE project_id IS NULL`, pid); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type Project struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Environment string    `json:"environment"`
+	CreatedAt   time.Time `json:"created_at"`
+	AgentCount  int       `json:"agent_count"`
+}
+
+// CreateProject inserts a new project. Returns conflict error on duplicate (name,environment).
+func (s *Store) CreateProject(name, environment string) (Project, error) {
+	res, err := s.db.Exec(`INSERT INTO projects (name, environment) VALUES (?, ?)`, name, environment)
+	if err != nil {
+		return Project{}, err
+	}
+	id, _ := res.LastInsertId()
+	return s.GetProject(id)
+}
+
+// GetProject returns one project by id with its current agent count.
+func (s *Store) GetProject(id int64) (Project, error) {
+	var p Project
+	err := s.db.QueryRow(`
+		SELECT p.id, p.name, p.environment, p.created_at,
+			(SELECT COUNT(*) FROM agents a WHERE a.project_id = p.id) AS agent_count
+		FROM projects p WHERE p.id = ?`, id,
+	).Scan(&p.ID, &p.Name, &p.Environment, &p.CreatedAt, &p.AgentCount)
+	return p, err
+}
+
+// ListProjects returns all projects with agent counts, ordered by name then env.
+func (s *Store) ListProjects() ([]Project, error) {
+	rows, err := s.db.Query(`
+		SELECT p.id, p.name, p.environment, p.created_at,
+			(SELECT COUNT(*) FROM agents a WHERE a.project_id = p.id) AS agent_count
+		FROM projects p ORDER BY p.name ASC, p.environment ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Project{}
+	for rows.Next() {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.Name, &p.Environment, &p.CreatedAt, &p.AgentCount); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// UpdateProject changes name + environment. Returns sql.ErrNoRows if missing,
+// UNIQUE error on (name,environment) collision.
+func (s *Store) UpdateProject(id int64, name, environment string) error {
+	res, err := s.db.Exec(`UPDATE projects SET name = ?, environment = ? WHERE id = ?`, name, environment, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// DeleteProject removes a project. Returns ErrProjectHasAgents if any agents
+// still belong to it — caller must move/delete them first.
+func (s *Store) DeleteProject(id int64) error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents WHERE project_id = ?`, id).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrProjectHasAgents
+	}
+	res, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ErrProjectHasAgents is returned by DeleteProject when agents still belong to it.
+var ErrProjectHasAgents = fmt.Errorf("project has agents")
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
@@ -400,13 +541,30 @@ func (s *Store) UpdateUserPassword(id int64, hashedPassword string) error {
 
 // ── Agents ────────────────────────────────────────────────────────────────────
 
-func (s *Store) CreateAgent(hostname, tokenHash string) (string, error) {
+// CreateAgent creates an agent under the given project. projectID must
+// reference an existing row in projects; otherwise the FK-style check in the
+// handler returns 400 before this runs.
+func (s *Store) CreateAgent(hostname, tokenHash string, projectID int64) (string, error) {
 	id := newID()
 	_, err := s.db.Exec(
-		`INSERT INTO agents (id, hostname, token_hash) VALUES (?, ?, ?)`,
-		id, hostname, tokenHash,
+		`INSERT INTO agents (id, hostname, token_hash, project_id) VALUES (?, ?, ?, ?)`,
+		id, hostname, tokenHash, projectID,
 	)
 	return id, err
+}
+
+// MoveAgentToProject reassigns an agent to a different project.
+// Returns sql.ErrNoRows if the agent does not exist.
+func (s *Store) MoveAgentToProject(agentID string, projectID int64) error {
+	res, err := s.db.Exec(`UPDATE agents SET project_id = ? WHERE id = ?`, projectID, agentID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // AgentIDs returns every currently-registered agent id. Used by log-store
@@ -537,10 +695,24 @@ func (s *Store) activeIssueCount(agentID string) int {
 	return total
 }
 
-// ListAgentsWithMetrics returns agents with embedded metrics. Pass nil to
-// return all agents (admin); pass a slice to filter to those IDs (developer).
+// ListAgentsWithMetrics returns agents with embedded metrics + project info.
+// Pass nil to return all agents (admin); pass a slice of agent IDs to filter.
+// Pass projectID > 0 to scope to a single project.
 func (s *Store) ListAgentsWithMetrics(allowed []string) ([]AgentWithMetrics, error) {
-	q := `SELECT id, hostname, last_seen, alerts_enabled FROM agents`
+	return s.listAgents(allowed, 0)
+}
+
+// ListAgentsByProject returns agents belonging to a project, with optional
+// allowed-id filter for developer-role requests.
+func (s *Store) ListAgentsByProject(projectID int64, allowed []string) ([]AgentWithMetrics, error) {
+	return s.listAgents(allowed, projectID)
+}
+
+func (s *Store) listAgents(allowed []string, projectID int64) ([]AgentWithMetrics, error) {
+	q := `SELECT a.id, a.hostname, a.last_seen, a.alerts_enabled,
+		COALESCE(a.project_id, 0), COALESCE(p.name, ''), COALESCE(p.environment, '')
+		FROM agents a LEFT JOIN projects p ON p.id = a.project_id`
+	var conds []string
 	var args []any
 	if allowed != nil {
 		if len(allowed) == 0 {
@@ -551,9 +723,16 @@ func (s *Store) ListAgentsWithMetrics(allowed []string) ([]AgentWithMetrics, err
 			ph[i] = "?"
 			args = append(args, id)
 		}
-		q += ` WHERE id IN (` + strings.Join(ph, ",") + `)`
+		conds = append(conds, `a.id IN (`+strings.Join(ph, ",")+`)`)
 	}
-	q += ` ORDER BY last_seen DESC`
+	if projectID > 0 {
+		conds = append(conds, `a.project_id = ?`)
+		args = append(args, projectID)
+	}
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, " AND ")
+	}
+	q += ` ORDER BY a.last_seen DESC`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -564,7 +743,8 @@ func (s *Store) ListAgentsWithMetrics(allowed []string) ([]AgentWithMetrics, err
 	for rows.Next() {
 		var a AgentWithMetrics
 		var enabled int
-		if err := rows.Scan(&a.ID, &a.Hostname, &a.LastSeen, &enabled); err != nil {
+		if err := rows.Scan(&a.ID, &a.Hostname, &a.LastSeen, &enabled,
+			&a.ProjectID, &a.ProjectName, &a.ProjectEnvironment); err != nil {
 			return nil, err
 		}
 		a.AlertsEnabled = enabled != 0
@@ -584,9 +764,13 @@ func (s *Store) ListAgentsWithMetrics(allowed []string) ([]AgentWithMetrics, err
 func (s *Store) GetAgentWithMetrics(id string) (AgentWithMetrics, error) {
 	var a AgentWithMetrics
 	var enabled int
-	err := s.db.QueryRow(
-		`SELECT id, hostname, last_seen, alerts_enabled FROM agents WHERE id = ?`, id,
-	).Scan(&a.ID, &a.Hostname, &a.LastSeen, &enabled)
+	err := s.db.QueryRow(`
+		SELECT a.id, a.hostname, a.last_seen, a.alerts_enabled,
+			COALESCE(a.project_id, 0), COALESCE(p.name, ''), COALESCE(p.environment, '')
+		FROM agents a LEFT JOIN projects p ON p.id = a.project_id
+		WHERE a.id = ?`, id,
+	).Scan(&a.ID, &a.Hostname, &a.LastSeen, &enabled,
+		&a.ProjectID, &a.ProjectName, &a.ProjectEnvironment)
 	if err != nil {
 		return AgentWithMetrics{}, err
 	}
@@ -1811,10 +1995,13 @@ type Agent struct {
 
 type AgentWithMetrics struct {
 	Agent
-	System         *SystemMetrics
-	ContainerCount int
-	AlertsEnabled  bool
-	ActiveIssues   int `json:"active_issues"`
+	System          *SystemMetrics
+	ContainerCount  int
+	AlertsEnabled   bool
+	ActiveIssues    int    `json:"active_issues"`
+	ProjectID       int64  `json:"project_id"`
+	ProjectName     string `json:"project_name"`
+	ProjectEnvironment string `json:"project_environment"`
 }
 
 type SystemMetrics struct {

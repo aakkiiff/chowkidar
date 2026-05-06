@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
-import { listAgents, registerAgent, type Agent } from '../api/client';
+import { listAgents, listProjectAgents, registerAgent, type Agent } from '../api/client';
 import type { AuthCtx } from './Protected';
+
+interface Props {
+  /** When provided, scope agent list to this project and pre-fill registration. */
+  projectId?: number;
+  /** Override section title (defaults to "Agents"). */
+  title?: string;
+}
 
 type AgentStatus = 'pending' | 'online' | 'offline';
 
@@ -40,7 +47,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(secs / 3600)}h ago`;
 }
 
-export default function AgentsList() {
+export default function AgentsList({ projectId, title = 'Agents' }: Props = {}) {
   const { token, role, onLogout } = useOutletContext<AuthCtx>();
   const isAdmin = role === 'admin';
   const navigate = useNavigate();
@@ -61,7 +68,9 @@ export default function AgentsList() {
 
   const loadAgents = useCallback(async () => {
     try {
-      const data = await listAgents(token);
+      const data = projectId
+        ? await listProjectAgents(projectId)
+        : await listAgents(token);
       setAgents(data ?? []);
       setPollError(false);
     } catch (err) {
@@ -70,7 +79,7 @@ export default function AgentsList() {
     } finally {
       setLoading(false);
     }
-  }, [token, onLogout]);
+  }, [token, onLogout, projectId]);
 
   useEffect(() => {
     let id: ReturnType<typeof setTimeout>;
@@ -87,10 +96,14 @@ export default function AgentsList() {
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!projectId) {
+      setRegisterError('Cannot register agent outside a project context');
+      return;
+    }
     setRegisterError('');
     setRegistering(true);
     try {
-      const result = await registerAgent(token, newHostname.trim());
+      const result = await registerAgent(token, newHostname.trim(), projectId);
       setNewAgent(result);
       setNewHostname('');
       setShowRegister(false);
@@ -116,8 +129,8 @@ export default function AgentsList() {
     <main className="dash-main">
       <div className="dash-section">
         <div className="dash-section-header">
-          <h2 className="dash-section-title">Agents</h2>
-          {isAdmin && (
+          <h2 className="dash-section-title">{title}</h2>
+          {isAdmin && projectId && (
             <button className="btn-primary" onClick={() => setShowRegister(true)}>+ Add Agent</button>
           )}
         </div>

@@ -17,7 +17,10 @@ import (
 )
 
 // maxConcurrent limits parallel Docker stat calls to protect the daemon.
-const maxConcurrent = 100
+// 100 was too aggressive — the daemon stalled on busy hosts with many
+// containers, causing 8s per-call timeouts to expire. 20 keeps the daemon
+// responsive while still scraping ~60 containers within the 10s tick.
+const maxConcurrent = 20
 
 type inspectCache struct {
 	status       string
@@ -83,7 +86,8 @@ func (d *DockerCollector) Collect() ([]types.ContainerMetrics, error) {
 			defer func() { <-sem }()
 
 			// Per-container timeout: slow/zombie containers don't block others.
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			// Includes wait time on the semaphore, so must cover queuing under load.
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 
 			m, err := d.collectOne(ctx, id, name, image, status)

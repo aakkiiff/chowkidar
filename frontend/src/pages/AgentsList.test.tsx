@@ -50,6 +50,9 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     container_count: 0,
     alerts_enabled: false,
     active_issues: 0,
+    project_id: 1,
+    project_name: 'default',
+    project_environment: '',
     ...overrides,
   };
 }

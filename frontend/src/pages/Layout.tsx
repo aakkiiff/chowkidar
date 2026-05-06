@@ -73,7 +73,7 @@ export default function Layout() {
   return (
     <div className="dashboard">
       <header className="dash-header">
-        <Link to="/agents" className="dash-brand dash-brand-btn" aria-label="Chowkidar — home">
+        <Link to="/projects" className="dash-brand dash-brand-btn" aria-label="Chowkidar — home">
           <img src="/favicon.svg" width="22" height="22" alt="" aria-hidden="true" />
           <span className="dash-title">Chowkidar</span>
         </Link>

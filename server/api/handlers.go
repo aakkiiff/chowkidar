@@ -52,10 +52,12 @@ func NewHandler(s *store.Store, ls *logstore.Store, br *logbroker.Broker, ab *al
 		// Per-agent-token rate limiters. Keyed by token hash, not IP.
 		// Report: generous — 30/min covers 10s intervals with headroom.
 		agentReportLimit: newIPLimiter(30, 5, 15*time.Minute),
-		// IngestLogs: allow reconnect bursts — initial backoff is 10s so
-		// 6/min burst 2 was too tight. 20/min burst 10 handles server
-		// restarts and container churn without blocking legit agents.
-		agentIngestLimit: newIPLimiter(20, 10, 15*time.Minute),
+		// IngestLogs: shipper batches by 200ms tick OR 8KB flush. Busy
+		// hosts with 50+ chatty containers can saturate the 8KB threshold
+		// many times per second — 100/sec sustained handles ~800 KB/s of
+		// log throughput per agent. Token auth + 1MB body cap remain the
+		// primary abuse defenses; this limiter just bounds the worst case.
+		agentIngestLimit: newIPLimiter(6000, 200, 15*time.Minute),
 	}
 }
 
@@ -246,7 +248,8 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RegisterAgent(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	var req struct {
-		Hostname string `json:"hostname"`
+		Hostname  string `json:"hostname"`
+		ProjectID int64  `json:"project_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid request body"})
@@ -261,9 +264,22 @@ func (h *Handler) RegisterAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"hostname too long (max 128)"})
 		return
 	}
+	if req.ProjectID <= 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"project_id required"})
+		return
+	}
+	// Verify project exists before creating the agent (avoids dangling FK).
+	if _, err := h.store.GetProject(req.ProjectID); err != nil {
+		if err == sql.ErrNoRows {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"project not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to verify project"})
+		return
+	}
 
 	token := newAgentToken()
-	agentID, err := h.store.CreateAgent(hostname, hashToken(token))
+	agentID, err := h.store.CreateAgent(hostname, hashToken(token), req.ProjectID)
 	if err != nil {
 		if isUniqueErr(err) {
 			writeJSON(w, http.StatusConflict, errorResponse{"hostname already in use"})
@@ -318,17 +334,20 @@ func (h *Handler) RenameAgent(w http.ResponseWriter, r *http.Request) {
 // agentResponse is the JSON shape consumed by the dashboard. Kept identical
 // for list + single-agent endpoints so the frontend has one Agent type.
 type agentResponse struct {
-	ID             string   `json:"id"`
-	Hostname       string   `json:"hostname"`
-	LastSeen       *string  `json:"last_seen"`
-	CPUPercent     *float64 `json:"cpu_percent"`
-	MemUsedGB      *float64 `json:"mem_used_gb"`
-	MemTotalGB     *float64 `json:"mem_total_gb"`
-	DiskUsedGB     *float64 `json:"disk_used_gb"`
-	DiskTotalGB    *float64 `json:"disk_total_gb"`
-	ContainerCount int      `json:"container_count"`
-	AlertsEnabled  bool     `json:"alerts_enabled"`
-	ActiveIssues   int      `json:"active_issues"`
+	ID                 string   `json:"id"`
+	Hostname           string   `json:"hostname"`
+	LastSeen           *string  `json:"last_seen"`
+	CPUPercent         *float64 `json:"cpu_percent"`
+	MemUsedGB          *float64 `json:"mem_used_gb"`
+	MemTotalGB         *float64 `json:"mem_total_gb"`
+	DiskUsedGB         *float64 `json:"disk_used_gb"`
+	DiskTotalGB        *float64 `json:"disk_total_gb"`
+	ContainerCount     int      `json:"container_count"`
+	AlertsEnabled      bool     `json:"alerts_enabled"`
+	ActiveIssues       int      `json:"active_issues"`
+	ProjectID          int64    `json:"project_id"`
+	ProjectName        string   `json:"project_name"`
+	ProjectEnvironment string   `json:"project_environment"`
 }
 
 func toAgentResponse(a store.AgentWithMetrics) agentResponse {
@@ -338,12 +357,15 @@ func toAgentResponse(a store.AgentWithMetrics) agentResponse {
 		lastSeen = &s
 	}
 	ar := agentResponse{
-		ID:             a.ID,
-		Hostname:       a.Hostname,
-		LastSeen:       lastSeen,
-		ContainerCount: a.ContainerCount,
-		AlertsEnabled:  a.AlertsEnabled,
-		ActiveIssues:   a.ActiveIssues,
+		ID:                 a.ID,
+		Hostname:           a.Hostname,
+		LastSeen:           lastSeen,
+		ContainerCount:     a.ContainerCount,
+		AlertsEnabled:      a.AlertsEnabled,
+		ActiveIssues:       a.ActiveIssues,
+		ProjectID:          a.ProjectID,
+		ProjectName:        a.ProjectName,
+		ProjectEnvironment: a.ProjectEnvironment,
 	}
 	if a.System != nil {
 		ar.CPUPercent = &a.System.CPUPercent

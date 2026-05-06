@@ -5,7 +5,8 @@ import Login from './pages/Login';
 import Setup from './pages/Setup';
 import Protected from './pages/Protected';
 import Layout from './pages/Layout';
-import AgentsList from './pages/AgentsList';
+import ProjectsList from './pages/ProjectsList';
+import ProjectDetail from './pages/ProjectDetail';
 import AgentDetailPage from './pages/AgentDetailPage';
 import EndpointDetailPage from './pages/EndpointDetailPage';
 import Settings from './pages/Settings';
@@ -33,8 +34,11 @@ export default function App() {
 
         <Route element={<Protected />}>
           <Route element={<Layout />}>
-            <Route index element={<Navigate to="/agents" replace />} />
-            <Route path="/agents" element={<AgentsList />} />
+            <Route index element={<Navigate to="/projects" replace />} />
+            <Route path="/projects" element={<ProjectsList />} />
+            <Route path="/projects/:id" element={<ProjectDetail />} />
+            {/* Legacy /agents URLs redirect to /projects for backward compat */}
+            <Route path="/agents" element={<Navigate to="/projects" replace />} />
             <Route path="/agents/:id" element={<Navigate to="overview" replace />} />
             <Route path="/agents/:id/:tab" element={<AgentDetailPage />} />
             <Route path="/agents/:id/endpoints/:eid" element={<EndpointDetailPage />} />

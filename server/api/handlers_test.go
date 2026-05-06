@@ -151,10 +151,33 @@ func doJSONBearer(t *testing.T, mux http.Handler, method, path, token string, bo
 	return w
 }
 
-// registerAgent registers an agent and returns its ID and bearer token.
+// projectIDCounter ensures unique project (name, env) pairs across handler tests.
+var projectIDCounter int64
+
+// createProject creates a project via the HTTP API and returns its ID.
+func createProject(t *testing.T, mux http.Handler, cookie string) int64 {
+	t.Helper()
+	projectIDCounter++
+	w := doJSON(t, mux, "POST", "/api/v1/projects", cookie, map[string]any{
+		"name":        fmt.Sprintf("test-proj-%d", projectIDCounter),
+		"environment": "",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("create project failed: %d %s", w.Code, w.Body.String())
+	}
+	var p map[string]any
+	json.NewDecoder(w.Body).Decode(&p)
+	return int64(p["id"].(float64))
+}
+
+// registerAgent registers an agent under a fresh project and returns ID + token.
 func registerAgent(t *testing.T, mux http.Handler, cookie, hostname string) (id, token string) {
 	t.Helper()
-	w := doJSON(t, mux, "POST", "/api/v1/agents/register", cookie, map[string]string{"hostname": hostname})
+	pid := createProject(t, mux, cookie)
+	w := doJSON(t, mux, "POST", "/api/v1/agents/register", cookie, map[string]any{
+		"hostname":   hostname,
+		"project_id": pid,
+	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("register agent failed: %d %s", w.Code, w.Body.String())
 	}
