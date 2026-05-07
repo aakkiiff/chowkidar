@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/technonext/chowkidar/server/alert"
-	"github.com/technonext/chowkidar/server/safedial"
 	"github.com/technonext/chowkidar/server/store"
 )
 
@@ -52,8 +51,7 @@ func New(st *store.Store, broker *alert.Broker, poster *alert.Poster) *Prober {
 		openIncident: map[int64]int64{},
 		sslFired:     map[int64]time.Time{},
 		client: &http.Client{
-			Transport: safedial.Transport(),
-			Timeout:   requestTO,
+			Timeout: requestTO,
 			// Don't auto-follow redirects: many uptime monitors care about
 			// the literal first response. 3xx is treated as healthy below.
 			CheckRedirect: func(*http.Request, []*http.Request) error {

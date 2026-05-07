@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/technonext/chowkidar/server/safedial"
 )
 
 const (
@@ -31,8 +30,7 @@ type Poster struct {
 
 func NewPoster() *Poster {
 	return &Poster{client: &http.Client{
-		Transport: safedial.Transport(),
-		Timeout:   requestTO,
+		Timeout: requestTO,
 	}}
 }
 
