@@ -1812,7 +1812,10 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .log-view {
-  height: 480px;
+  /* Fit available viewport: top of panel sits ~220px below viewport top
+     (header + toolbar + filters), leave ~24px margin at bottom. */
+  height: calc(100vh - 240px);
+  min-height: 400px;
   overflow-y: auto;
   overflow-x: hidden;
   background: #0a0c10;
@@ -2371,7 +2374,7 @@ input[type="number"]::-webkit-outer-spin-button {
     justify-content: space-between;
   }
 
-  .log-view { height: 360px; }
+  .log-view { height: calc(100vh - 200px); min-height: 320px; }
 
   .log-line {
     grid-template-columns: 64px 48px 1fr;
@@ -2410,7 +2413,7 @@ input[type="number"]::-webkit-outer-spin-button {
 @media (max-width: 480px) {
   .dash-title { font-size: 13px; }
   .chart-wrap { height: 160px; }
-  .log-view { height: 300px; }
+  .log-view { height: calc(100vh - 180px); min-height: 260px; }
   .log-search { width: 100%; }
   .log-controls { width: 100%; }
   .log-range-label { order: -1; }

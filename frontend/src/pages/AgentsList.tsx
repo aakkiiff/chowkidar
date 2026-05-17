@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
 import { listAgents, listProjectAgents, registerAgent, type Agent } from '../api/client';
+import { copyText } from '../utils/clipboard';
 import type { AuthCtx } from './Protected';
 
 interface Props {
@@ -115,12 +116,15 @@ export default function AgentsList({ projectId, title = 'Agents' }: Props = {}) 
     }
   };
 
-  const copyToken = () => {
+  const copyToken = async () => {
     if (!newAgent) return;
-    navigator.clipboard.writeText(newAgent.token).then(() => {
+    const ok = await copyText(newAgent.token);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    } else {
+      alert('Copy failed — your browser blocked clipboard access. Select the token text and copy manually.');
+    }
   };
 
   const openAgent = (a: Agent) => navigate(`/agents/${a.id}/overview`);
@@ -235,7 +239,16 @@ export default function AgentsList({ projectId, title = 'Agents' }: Props = {}) 
             <h3 className="modal-title">Agent Registered</h3>
             <p className="modal-text">Copy this token now — it won't be shown again.</p>
             <div className="token-display">
-              <code>{newAgent.token}</code>
+              <code
+                style={{ userSelect: 'all', cursor: 'text' }}
+                onClick={e => {
+                  const sel = window.getSelection();
+                  const range = document.createRange();
+                  range.selectNodeContents(e.currentTarget);
+                  sel?.removeAllRanges();
+                  sel?.addRange(range);
+                }}
+              >{newAgent.token}</code>
               <button className="btn-secondary" onClick={copyToken}>
                 {copied ? 'Copied!' : 'Copy'}
               </button>
