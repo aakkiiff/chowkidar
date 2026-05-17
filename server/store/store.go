@@ -348,7 +348,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 	rows, err := s.db.Query(`
 		SELECT p.id, p.name, p.environment, p.created_at,
 			(SELECT COUNT(*) FROM agents a WHERE a.project_id = p.id) AS agent_count
-		FROM projects p ORDER BY p.name ASC, p.environment ASC`)
+		FROM projects p ORDER BY p.name COLLATE NOCASE ASC, p.environment COLLATE NOCASE ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +383,7 @@ func (s *Store) ListProjectsForAgents(agentIDs []string) ([]Project, error) {
 		INNER JOIN agents a ON a.project_id = p.id
 		WHERE a.id IN (` + strings.Join(ph, ",") + `)
 		GROUP BY p.id, p.name, p.environment, p.created_at
-		ORDER BY p.name ASC, p.environment ASC`
+		ORDER BY p.name COLLATE NOCASE ASC, p.environment COLLATE NOCASE ASC`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -790,7 +790,7 @@ func (s *Store) listAgents(allowed []string, projectID int64) ([]AgentWithMetric
 	if len(conds) > 0 {
 		q += ` WHERE ` + strings.Join(conds, " AND ")
 	}
-	q += ` ORDER BY a.last_seen DESC`
+	q += ` ORDER BY a.hostname COLLATE NOCASE ASC`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err

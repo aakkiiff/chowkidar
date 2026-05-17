@@ -1,7 +1,7 @@
-TAG=0.1.3
-FE_IMG=aakkiiff/chowkidar:frontend-$TAG
+TAG=0.1.5
+# FE_IMG=aakkiiff/chowkidar:frontend-$TAG
 BE_IMG=aakkiiff/chowkidar:server-$TAG
-AGNT_IMG=aakkiiff/chowkidar:agent-$TAG
+# AGNT_IMG=aakkiiff/chowkidar:agent-$TAG
 
 # Build the images
 docker build -t $BE_IMG ./server
