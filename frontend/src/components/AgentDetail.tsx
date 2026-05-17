@@ -130,7 +130,9 @@ function MultiSelect({ options, selected, onChange }: {
   onChange: (v: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const ref = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -140,8 +142,22 @@ function MultiSelect({ options, selected, onChange }: {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  useEffect(() => {
+    if (open) {
+      setQuery('');
+      requestAnimationFrame(() => searchRef.current?.focus());
+    }
+  }, [open]);
+
   const toggle = (name: string) =>
     onChange(selected.includes(name) ? selected.filter(n => n !== name) : [...selected, name]);
+
+  const showSearch = options.length > 6;
+  const filtered = useMemo(() => {
+    if (!query.trim()) return options;
+    const q = query.toLowerCase();
+    return options.filter(o => o.toLowerCase().includes(q));
+  }, [options, query]);
 
   const label = selected.length === 0
     ? 'Select containers…'
@@ -161,10 +177,30 @@ function MultiSelect({ options, selected, onChange }: {
       </button>
       {open && (
         <div className="multiselect-dropdown">
-          {options.length === 0 && (
-            <div className="multiselect-empty">No containers</div>
+          {showSearch && (
+            <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>
+              <input
+                ref={searchRef}
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Escape') setOpen(false); }}
+                placeholder="Search…"
+                style={{
+                  width: '100%', padding: '6px 8px',
+                  border: '1px solid var(--border)', borderRadius: 'var(--r)',
+                  background: 'var(--canvas)', color: 'var(--text)',
+                  fontFamily: 'var(--f-ui)', fontSize: 12, outline: 'none',
+                }}
+              />
+            </div>
           )}
-          {options.map(name => (
+          {filtered.length === 0 && (
+            <div className="multiselect-empty">
+              {options.length === 0 ? 'No containers' : 'No matches'}
+            </div>
+          )}
+          {filtered.map(name => (
             <label key={name} className="multiselect-option">
               <input
                 type="checkbox"
@@ -894,7 +930,7 @@ export default function AgentDetail({
         {activeTab === 'logs' && (
           <>
             <div className="detail-section">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'space-between' }}>
                 <span className="detail-section-title" style={{ whiteSpace: 'nowrap' }}>Container</span>
                 <SingleSelectDropdown
                   options={containerNames.map(n => ({ label: n, value: n }))}
