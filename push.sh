@@ -1,4 +1,4 @@
-TAG=0.1.7
+TAG=0.2.0
 FE_IMG=aakkiiff/chowkidar:frontend-$TAG
 BE_IMG=aakkiiff/chowkidar:server-$TAG
 # AGNT_IMG=aakkiiff/chowkidar:agent-$TAG

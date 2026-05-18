@@ -6,6 +6,11 @@ const API_BASE = (import.meta.env.VITE_API_BASE ?? '/api/v1').replace(/\/$/, '')
 // Auth is handled exclusively via httpOnly cookie set by the server on login.
 // credentials: 'include' ensures the browser sends the cookie on every request.
 // Authorization headers are NOT sent — the token is never accessible to JS.
+// Paths whose 401 means "bad credentials" — NOT "session expired". For these
+// we let the server's error message bubble through unmodified and skip the
+// clearSession() side effect (which fires an unwanted logout call).
+const AUTH_PATHS = ['/auth/login', '/setup'];
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
@@ -13,7 +18,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   });
 
-  if (res.status === 401) {
+  if (res.status === 401 && !AUTH_PATHS.some(p => path.startsWith(p))) {
     clearSession();
     throw new Error('Session expired');
   }
