@@ -32,8 +32,8 @@ describe('Login page', () => {
 
   it('renders username and password fields and submit button', () => {
     renderLogin();
-    expect(screen.getByPlaceholderText('Username')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Password')).toBeInTheDocument();
+    expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^password$/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
   });
 
@@ -41,8 +41,8 @@ describe('Login page', () => {
     (client.login as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('invalid credentials'));
     renderLogin();
 
-    fireEvent.change(screen.getByPlaceholderText('Username'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByPlaceholderText('Password'), { target: { value: 'wrong' } });
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: 'wrong' } });
     fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
     await waitFor(() => {
@@ -57,8 +57,8 @@ describe('Login page', () => {
     });
     renderLogin();
 
-    fireEvent.change(screen.getByPlaceholderText('Username'), { target: { value: 'admin' } });
-    fireEvent.change(screen.getByPlaceholderText('Password'), { target: { value: 'adminpass' } });
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: 'adminpass' } });
     fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
     await waitFor(() => {

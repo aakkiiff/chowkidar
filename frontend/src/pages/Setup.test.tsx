@@ -19,16 +19,23 @@ describe('Setup page', () => {
 
   it('renders password fields and submit button', () => {
     renderSetup();
-    expect(screen.getByPlaceholderText(/password \(min/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/confirm password/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^password$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/confirm password/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /create admin/i })).toBeInTheDocument();
   });
 
   it('shows error when passwords do not match', async () => {
     renderSetup();
-    fireEvent.change(screen.getByPlaceholderText(/password \(min/i), { target: { value: 'strongpassword1' } });
-    fireEvent.change(screen.getByPlaceholderText(/confirm password/i), { target: { value: 'different12345' } });
-    fireEvent.click(screen.getByRole('button', { name: /create admin/i }));
+    // Mismatch is enforced client-side via button-disabled; force submit by
+    // typing matching valid pw, then breaking the confirm field and submitting
+    // via the form's submit event so we hit the handler validation branch.
+    const pw = screen.getByLabelText(/^password$/i);
+    const cf = screen.getByLabelText(/confirm password/i);
+    fireEvent.change(pw, { target: { value: 'strongpassword1' } });
+    fireEvent.change(cf, { target: { value: 'strongpassword1' } });
+    fireEvent.change(cf, { target: { value: 'different12345' } });
+    // Button is disabled when mismatched; submit the form directly.
+    fireEvent.submit(pw.closest('form')!);
     await waitFor(() => {
       expect(screen.getByText(/passwords do not match/i)).toBeInTheDocument();
     });
@@ -37,9 +44,11 @@ describe('Setup page', () => {
 
   it('shows error when password is too short', async () => {
     renderSetup();
-    fireEvent.change(screen.getByPlaceholderText(/password \(min/i), { target: { value: 'short' } });
-    fireEvent.change(screen.getByPlaceholderText(/confirm password/i), { target: { value: 'short' } });
-    fireEvent.click(screen.getByRole('button', { name: /create admin/i }));
+    const pw = screen.getByLabelText(/^password$/i);
+    const cf = screen.getByLabelText(/confirm password/i);
+    fireEvent.change(pw, { target: { value: 'short' } });
+    fireEvent.change(cf, { target: { value: 'short' } });
+    fireEvent.submit(pw.closest('form')!);
     await waitFor(() => {
       expect(screen.getByText(/at least 12 characters/i)).toBeInTheDocument();
     });
@@ -51,8 +60,8 @@ describe('Setup page', () => {
     const onComplete = vi.fn();
     renderSetup(onComplete);
 
-    fireEvent.change(screen.getByPlaceholderText(/password \(min/i), { target: { value: 'strongpassword1' } });
-    fireEvent.change(screen.getByPlaceholderText(/confirm password/i), { target: { value: 'strongpassword1' } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: 'strongpassword1' } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: 'strongpassword1' } });
     fireEvent.click(screen.getByRole('button', { name: /create admin/i }));
 
     await waitFor(() => {
@@ -65,8 +74,8 @@ describe('Setup page', () => {
     (client.setupAdmin as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('setup already completed'));
     renderSetup();
 
-    fireEvent.change(screen.getByPlaceholderText(/password \(min/i), { target: { value: 'strongpassword1' } });
-    fireEvent.change(screen.getByPlaceholderText(/confirm password/i), { target: { value: 'strongpassword1' } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: 'strongpassword1' } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: 'strongpassword1' } });
     fireEvent.click(screen.getByRole('button', { name: /create admin/i }));
 
     await waitFor(() => {
@@ -81,12 +90,14 @@ describe('Setup page', () => {
     );
     renderSetup();
 
-    fireEvent.change(screen.getByPlaceholderText(/password \(min/i), { target: { value: 'strongpassword1' } });
-    fireEvent.change(screen.getByPlaceholderText(/confirm password/i), { target: { value: 'strongpassword1' } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: 'strongpassword1' } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: 'strongpassword1' } });
     fireEvent.click(screen.getByRole('button', { name: /create admin/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button')).toBeDisabled();
+      // Submit button is disabled when loading. Use name match to avoid the
+      // show/hide password toggle button.
+      expect(screen.getByRole('button', { name: /creating account/i })).toBeDisabled();
     });
 
     resolve!();
