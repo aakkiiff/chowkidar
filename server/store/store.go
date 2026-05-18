@@ -270,10 +270,11 @@ func (s *Store) migrate() error {
 	if err := s.backfillDefaultProject(); err != nil {
 		return fmt.Errorf("backfill default project: %w", err)
 	}
-		// Grant existing developers access to all existing agents so they don't
-		// lose visibility on upgrade. Safe to re-run (INSERT OR IGNORE).
-		s.db.Exec(`INSERT OR IGNORE INTO user_agent_perms (user_id, agent_id)
-			SELECT u.id, a.id FROM users u CROSS JOIN agents a WHERE u.role = 'developer'`)
+	// NOTE: previous versions auto-granted every developer access to every
+	// agent on each startup as a "safety net" during the project rollout.
+	// That ran every restart and silently widened developer permissions —
+	// including for new agents created later. Removed entirely. Admins
+	// must grant perms explicitly via Settings → Users → Agent access.
 
 	return nil
 }
