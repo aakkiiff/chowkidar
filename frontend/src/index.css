@@ -2679,3 +2679,30 @@ input[type="number"]::-webkit-outer-spin-button {
   .kpi-strip { grid-template-columns: repeat(2, 1fr); }
   .kpi-val { font-size: 18px; }
 }
+
+/* =============================================================================
+   Login scene overlay — lift the form above the animated background
+   ========================================================================== */
+.login-page-scene {
+  position: relative;
+  background: #000;
+  overflow: hidden;
+  cursor: crosshair;          /* hint: cursor controls the torch */
+}
+.login-page-scene .login-card {
+  position: relative;
+  z-index: 10;
+  /* solid translucent fill — cheaper than backdrop-filter blur */
+  background: rgba(24, 27, 31, 0.94);
+  border: 1px solid rgba(51, 162, 229, 0.28);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(51, 162, 229, 0.08) inset;
+}
+.login-page-scene .login-card h1 {
+  text-shadow: 0 0 18px rgba(255, 174, 60, 0.35);
+}
+.login-page-scene .login-card .login-icon {
+  color: #ffae3c;
+  filter: drop-shadow(0 0 8px rgba(255, 140, 40, 0.5));
+}

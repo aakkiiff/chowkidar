@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { getToken, login, saveSession } from '../api/client';
+import LoginScene from '../components/LoginScene';
 
 interface LocationState {
   from?: { pathname: string };
@@ -37,7 +38,8 @@ export default function Login() {
   };
 
   return (
-    <div className="login-page">
+    <div className="login-page login-page-scene">
+      <LoginScene />
       <form className="login-card" onSubmit={handleSubmit}>
         <div className="login-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

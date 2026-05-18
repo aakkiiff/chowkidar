@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { setupAdmin } from '../api/client';
+import LoginScene from '../components/LoginScene';
 
 interface Props {
   onComplete: () => void;
@@ -34,7 +35,8 @@ export default function Setup({ onComplete }: Props) {
   };
 
   return (
-    <div className="login-page">
+    <div className="login-page login-page-scene">
+      <LoginScene />
       <form className="login-card" onSubmit={handleSubmit}>
         <div className="login-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
