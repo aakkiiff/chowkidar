@@ -13,6 +13,11 @@ const (
 	RoleDeveloper = "developer"
 )
 
+// Session lifetime. Reduced from 24h → 5h to limit blast radius if a token
+// leaks (XSS, copy/paste of dev tools, etc). Cookie MaxAge in handlers.go
+// must stay in sync with this value.
+const SessionTTL = 3 * time.Hour
+
 type Claims struct {
 	Username string `json:"username"`
 	Role     string `json:"role"`
@@ -24,7 +29,7 @@ func GenerateToken(username, role, secret string) (string, error) {
 		Username: username,
 		Role:     role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(SessionTTL)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}

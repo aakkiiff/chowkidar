@@ -745,3 +745,29 @@ func TestWebhook_CRUD(t *testing.T) {
 		t.Errorf("DeleteWebhook: expected 204, got %d", wd.Code)
 	}
 }
+
+func TestLogin_RecordsLastLogin(t *testing.T) {
+	mux, s := setupHandler(t)
+	cookie := adminCookie(t, mux)
+
+	// /users includes last_login_at — admin just logged in, should be set.
+	w := doJSON(t, mux, "GET", "/api/v1/users", cookie, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListUsers: %d %s", w.Code, w.Body.String())
+	}
+	var users []map[string]any
+	json.NewDecoder(w.Body).Decode(&users)
+	var found bool
+	for _, u := range users {
+		if u["username"] == adminUser {
+			found = true
+			if u["last_login_at"] == nil {
+				t.Error("expected last_login_at after login, got nil")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("admin user not in list")
+	}
+	_ = s // silence unused
+}

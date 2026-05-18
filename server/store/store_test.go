@@ -609,3 +609,47 @@ func TestAlertRetention_GetSet_Bounds(t *testing.T) {
 		t.Error("expected error for 91 days")
 	}
 }
+
+// ── Last login ────────────────────────────────────────────────────────────────
+
+func TestTouchLastLogin_UpdatesAndPersists(t *testing.T) {
+	s := newTestStore(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+	u, err := s.CreateAppUser("lluser", string(hash), RoleAdmin)
+	if err != nil {
+		t.Fatalf("CreateAppUser: %v", err)
+	}
+
+	// Fresh user — no last_login_at yet.
+	users, _ := s.ListUsers()
+	var fresh *AppUser
+	for i := range users {
+		if users[i].Username == "lluser" {
+			fresh = &users[i]
+		}
+	}
+	if fresh == nil || fresh.LastLoginAt != nil {
+		t.Fatalf("expected new user without last_login_at, got %+v", fresh)
+	}
+
+	if err := s.TouchLastLogin(int(u.ID)); err != nil {
+		t.Fatalf("TouchLastLogin: %v", err)
+	}
+
+	users, _ = s.ListUsers()
+	for i := range users {
+		if users[i].Username == "lluser" {
+			if users[i].LastLoginAt == nil {
+				t.Error("expected non-nil last_login_at after Touch")
+			}
+		}
+	}
+}
+
+func TestTouchLastLogin_NonExistentUser_NoError(t *testing.T) {
+	s := newTestStore(t)
+	// SQL UPDATE on non-existent id is a no-op, not an error.
+	if err := s.TouchLastLogin(99999); err != nil {
+		t.Errorf("expected nil for unknown id, got %v", err)
+	}
+}

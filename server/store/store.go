@@ -275,6 +275,7 @@ func (s *Store) migrate() error {
 		`ALTER TABLE alert_rules ADD COLUMN ssl_alert_enabled INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE endpoint_probes ADD COLUMN cert_not_after DATETIME`,
 		`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`,
+		`ALTER TABLE users ADD COLUMN last_login_at DATETIME`,
 		`ALTER TABLE container_metrics ADD COLUMN restart_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE container_metrics ADD COLUMN started_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE container_metrics ADD COLUMN net_rx_mb REAL NOT NULL DEFAULT 0`,
@@ -502,15 +503,16 @@ func (s *Store) GetUser(username string) (id int, password, role string, err err
 
 // AppUser is the JSON-friendly view of a user (no password hash).
 type AppUser struct {
-	ID        int64     `json:"id"`
-	Username  string    `json:"username"`
-	Role      string    `json:"role"`
-	AgentIDs  []string  `json:"agent_ids,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64      `json:"id"`
+	Username    string     `json:"username"`
+	Role        string     `json:"role"`
+	AgentIDs    []string   `json:"agent_ids,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 }
 
 func (s *Store) ListUsers() ([]AppUser, error) {
-	rows, err := s.db.Query(`SELECT id, username, role, created_at FROM users ORDER BY id ASC`)
+	rows, err := s.db.Query(`SELECT id, username, role, created_at, last_login_at FROM users ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -518,8 +520,13 @@ func (s *Store) ListUsers() ([]AppUser, error) {
 	var out []AppUser
 	for rows.Next() {
 		var u AppUser
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt); err != nil {
+		var last sql.NullTime
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &last); err != nil {
 			return nil, err
+		}
+		if last.Valid {
+			t := last.Time
+			u.LastLoginAt = &t
 		}
 		if u.Role == "developer" {
 			u.AgentIDs, _ = s.GetUserAgentPerms(u.ID)
@@ -527,6 +534,15 @@ func (s *Store) ListUsers() ([]AppUser, error) {
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// TouchLastLogin records a successful login. Called async from the login
+// handler so a slow DB write never delays auth response. Failures are logged
+// at the call site (audit-update is not load-bearing for auth correctness).
+func (s *Store) TouchLastLogin(userID int) error {
+	_, err := s.db.Exec(`UPDATE users SET last_login_at = ? WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339), userID)
+	return err
 }
 
 // CreateAppUser inserts a new user with the given role + bcrypt hash.

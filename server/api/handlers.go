@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -140,7 +141,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, hashedPassword, role, err := h.store.GetUser(req.Username)
+	userID, hashedPassword, role, err := h.store.GetUser(req.Username)
 	if err != nil {
 		// Constant-time dummy compare prevents username enumeration via timing.
 		bcrypt.CompareHashAndPassword([]byte("$2a$10$placeholder"), []byte(req.Password))
@@ -150,6 +151,14 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(req.Password)); err != nil {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid credentials"})
 		return
+	}
+
+	// Record last login. Single UPDATE in WAL — sub-millisecond, no need to
+	// fire-and-forget in a goroutine (would leak past test cleanup + drain
+	// DB pool under load). Failure is logged but not propagated so auth
+	// never breaks because of an audit-trail glitch.
+	if err := h.store.TouchLastLogin(userID); err != nil {
+		slog.Warn("touch last_login failed", "user_id", userID, "err", err)
 	}
 
 	token, err := GenerateToken(req.Username, role, h.secret)
@@ -165,7 +174,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400, // 24h, matches JWT expiry
+		MaxAge:   int(SessionTTL.Seconds()), // matches JWT expiry (5h)
 		Secure:   h.cookieSecure,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{

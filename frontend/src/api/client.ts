@@ -75,6 +75,7 @@ export interface AppUser {
   role: Role;
   agent_ids?: string[];
   created_at: string;
+  last_login_at?: string | null;
 }
 
 export function listUsers(_token: string) {

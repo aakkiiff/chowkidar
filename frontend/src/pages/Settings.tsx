@@ -27,6 +27,17 @@ import {
 import ThemeToggle from '../components/ThemeToggle';
 import type { AuthCtx } from './Protected';
 
+// Compact "x ago" for the users-table last-login cell. NULL renders elsewhere
+// as "never"; this only handles the populated case.
+function lastLoginAgo(iso: string): string {
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60)    return `${secs}s ago`;
+  if (secs < 3600)  return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  const days = Math.floor(secs / 86400);
+  return days < 30 ? `${days}d ago` : new Date(iso).toLocaleDateString();
+}
+
 const WEBHOOK_TYPES: { value: WebhookType; label: string }[] = [
   { value: 'discord', label: 'Discord' },
 ];
@@ -686,6 +697,7 @@ export default function Settings() {
                   <th scope="col">Username</th>
                   <th scope="col">Role</th>
                   <th scope="col">Agents</th>
+                  <th scope="col">Last login</th>
                   <th scope="col">Created</th>
                   <th scope="col" />
                 </tr>
@@ -710,6 +722,9 @@ export default function Settings() {
                             : <span className="td-muted" style={{ opacity: 0.5 }}>No access</span>
                           : <span className="td-muted">—</span>
                         }
+                      </td>
+                      <td className="td-muted mono" title={u.last_login_at ?? ''}>
+                        {u.last_login_at ? lastLoginAgo(u.last_login_at) : <span style={{ opacity: 0.5 }}>never</span>}
                       </td>
                       <td className="td-muted mono">{new Date(u.created_at).toLocaleDateString()}</td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
