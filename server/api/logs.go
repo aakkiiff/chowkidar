@@ -171,6 +171,13 @@ func (h *Handler) StreamAlerts(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, ": ready\n\n")
 	flusher.Flush()
 
+	// Replay recent persisted events so a freshly-opened dashboard tab catches
+	// up on anything fired while it was closed. Sent newest-first as a single
+	// `backlog` event; UI replaces its list with this then appends live events.
+	recent, _ := h.store.RecentAlertEvents(100)
+	writeSSE(w, "backlog", recent)
+	flusher.Flush()
+
 	ch, unsub := h.alertBroker.Subscribe(64)
 	defer unsub()
 

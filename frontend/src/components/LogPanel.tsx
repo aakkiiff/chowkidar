@@ -66,11 +66,18 @@ function LogPanelImpl({ token, agentId, containerName, onExpired }: Props) {
   // `minutes` carries both preset and custom values; "custom" in the UI is
   // simply any minutes value that isn't in PRESETS.
   const [minutes, setMinutes] = useState<number>(5);
+  // Custom range UX — unit defaults to "min" but user can pick hr/day so the
+  // bare number isn't ambiguous (was a frequent confusion: 5 = 5min? 5hr?).
+  type CustomUnit = 'min' | 'hr' | 'day';
+  const [customUnit, setCustomUnit] = useState<CustomUnit>('min');
+  const unitFactor: Record<CustomUnit, number> = { min: 1, hr: 60, day: 1440 };
 
   const seqRef = useRef(0);
   const nextId = () => `e${++seqRef.current}`;
 
   const isCustom = useMemo(() => !(PRESETS as readonly number[]).includes(minutes), [minutes]);
+  // Display value = minutes / current unit factor, rounded to nearest int.
+  const customDisplay = Math.max(1, Math.round(minutes / unitFactor[customUnit]));
 
   useEffect(() => {
     setEntries([]);
@@ -198,20 +205,42 @@ function LogPanelImpl({ token, agentId, containerName, onExpired }: Props) {
             placeholder="Range…"
           />
           {isCustom && (
-            <input
-              type="number"
-              min={1}
-              max={1440}
-              className="form-input log-custom-input"
-              placeholder="min"
-              value={minutes}
-              disabled={live}
-              onChange={e => {
-                const n = parseInt(e.target.value, 10);
-                if (Number.isFinite(n) && n > 0) setMinutes(n);
-              }}
-              aria-label="Custom minutes"
-            />
+            <span style={{ display: 'inline-flex', gap: 4 }}>
+              <input
+                type="number"
+                min={1}
+                max={customUnit === 'min' ? 1440 : customUnit === 'hr' ? 24 : 7}
+                className="form-input log-custom-input"
+                placeholder="amount"
+                value={customDisplay}
+                disabled={live}
+                onChange={e => {
+                  const n = parseInt(e.target.value, 10);
+                  if (Number.isFinite(n) && n > 0) {
+                    const mins = Math.min(10080, Math.max(1, n * unitFactor[customUnit]));
+                    setMinutes(mins);
+                  }
+                }}
+                aria-label={`Custom ${customUnit}`}
+              />
+              <select
+                className="form-input"
+                style={{ width: 'auto', minWidth: 70, padding: '4px 6px' }}
+                value={customUnit}
+                disabled={live}
+                onChange={e => {
+                  const nextUnit = e.target.value as CustomUnit;
+                  // Keep displayed amount, recompute minutes to match new unit.
+                  setMinutes(customDisplay * unitFactor[nextUnit]);
+                  setCustomUnit(nextUnit);
+                }}
+                aria-label="Time unit"
+              >
+                <option value="min">minutes</option>
+                <option value="hr">hours</option>
+                <option value="day">days</option>
+              </select>
+            </span>
           )}
 
           <input

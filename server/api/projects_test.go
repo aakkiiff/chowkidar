@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/technonext/chowkidar/server/store"
 )
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -395,4 +398,107 @@ func TestAgentResponse_IncludesProjectInfo(t *testing.T) {
 	if int64(a["project_id"].(float64)) != pid {
 		t.Errorf("expected project_id %d, got %v", pid, a["project_id"])
 	}
+}
+
+// ── Persistent alerts ─────────────────────────────────────────────────────────
+
+func TestAlerts_RecentEmpty(t *testing.T) {
+	mux, _ := setupHandler(t)
+	cookie := adminCookie(t, mux)
+	w := doJSON(t, mux, "GET", "/api/v1/alerts/recent", cookie, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("RecentAlerts: %d %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	json.NewDecoder(w.Body).Decode(&body)
+	events, _ := body["events"].([]any)
+	if len(events) != 0 {
+		t.Errorf("expected 0 events on fresh store, got %d", len(events))
+	}
+	if int(body["unread"].(float64)) != 0 {
+		t.Errorf("expected unread=0")
+	}
+}
+
+func TestAlerts_MarkSeen(t *testing.T) {
+	mux, s := setupHandler(t)
+	cookie := adminCookie(t, mux)
+	// Seed two events directly via the store layer (evaluator path).
+	s.SaveAlertEvent(store.AlertEvent{
+		AgentID: "x", Hostname: "h", Metric: "cpu", Phase: "fired",
+		Value: 90, Threshold: 80, FiredAt: time.Now(),
+	})
+	s.SaveAlertEvent(store.AlertEvent{
+		AgentID: "x", Hostname: "h", Metric: "cpu", Phase: "resolved",
+		Value: 60, Threshold: 80, FiredAt: time.Now().Add(time.Minute),
+	})
+
+	w := doJSON(t, mux, "POST", "/api/v1/alerts/seen", cookie, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("MarkAlertsSeen: %d %s", w.Code, w.Body.String())
+	}
+	var resp map[string]int
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["marked"] != 2 {
+		t.Errorf("expected marked=2, got %d", resp["marked"])
+	}
+
+	// Second call: nothing left to mark.
+	w2 := doJSON(t, mux, "POST", "/api/v1/alerts/seen", cookie, nil)
+	var resp2 map[string]int
+	json.NewDecoder(w2.Body).Decode(&resp2)
+	if resp2["marked"] != 0 {
+		t.Errorf("expected marked=0 on repeat, got %d", resp2["marked"])
+	}
+}
+
+func TestAlerts_Retention_GetSet(t *testing.T) {
+	mux, _ := setupHandler(t)
+	cookie := adminCookie(t, mux)
+
+	w := doJSON(t, mux, "GET", "/api/v1/settings/alert-retention", cookie, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetAlertRetention: %d", w.Code)
+	}
+	var got map[string]int
+	json.NewDecoder(w.Body).Decode(&got)
+	if got["days"] != 7 {
+		t.Errorf("expected default 7, got %d", got["days"])
+	}
+
+	w2 := doJSON(t, mux, "PUT", "/api/v1/settings/alert-retention", cookie, map[string]int{"days": 30})
+	if w2.Code != http.StatusOK {
+		t.Errorf("SetAlertRetention: %d %s", w2.Code, w2.Body.String())
+	}
+
+	// Out-of-range → 400.
+	w3 := doJSON(t, mux, "PUT", "/api/v1/settings/alert-retention", cookie, map[string]int{"days": 0})
+	if w3.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for days=0, got %d", w3.Code)
+	}
+	w4 := doJSON(t, mux, "PUT", "/api/v1/settings/alert-retention", cookie, map[string]int{"days": 100})
+	if w4.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for days=100, got %d", w4.Code)
+	}
+}
+
+func TestAlerts_DeveloperForbidden(t *testing.T) {
+	mux, s := setupHandler(t)
+	devCookie := developerCookie(t, mux, s)
+	for _, p := range []struct{ method, path string }{
+		{"GET", "/api/v1/alerts/recent"},
+		{"POST", "/api/v1/alerts/seen"},
+		{"GET", "/api/v1/settings/alert-retention"},
+		{"PUT", "/api/v1/settings/alert-retention"},
+	} {
+		w := doJSON(t, mux, p.method, p.path, devCookie, map[string]int{"days": 14})
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s %s: expected 403, got %d", p.method, p.path, w.Code)
+		}
+	}
+}
+
+func TestAlerts_StoreImportSymbol(_ *testing.T) {
+	// Force store import so it doesn't get pruned in this test file.
+	_ = store.AlertEvent{}
 }

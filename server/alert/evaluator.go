@@ -276,7 +276,12 @@ func (e *Evaluator) evaluate(k key, containerName string, value float64, thresho
 		Resolved:      phase == PhaseResolved,
 	}
 
-	// Always broadcast to in-process subscribers (frontend toasts).
+	// Persist + broadcast. "Observed" phase is transient (sustain window not
+	// yet elapsed) — don't pollute the notification log with rows that might
+	// disappear on the next tick. Only "fired" and "resolved" hit the DB.
+	if phase != PhaseObserved {
+		e.persist(evt)
+	}
 	if e.broker != nil {
 		e.broker.Publish(evt)
 	}
@@ -343,6 +348,9 @@ func (e *Evaluator) evaluateBool(k key, containerName string, breaching bool, va
 		Phase:         phase,
 		Resolved:      phase == PhaseResolved,
 	}
+	if phase != PhaseObserved {
+		e.persist(evt)
+	}
 	if e.broker != nil {
 		e.broker.Publish(evt)
 	}
@@ -353,4 +361,29 @@ func (e *Evaluator) evaluateBool(k key, containerName string, breaching bool, va
 		return
 	}
 	go e.poster.Send(row.WebhookURL, row.WebhookType, evt)
+}
+
+// persist writes one event to the alert_events table for the bell history.
+// Failures are logged but never block the broker fan-out — a missed DB
+// write is preferable to losing a live alert toast.
+func (e *Evaluator) persist(evt Event) {
+	if e.st == nil {
+		return
+	}
+	_, err := e.st.SaveAlertEvent(store.AlertEvent{
+		AgentID:       evt.AgentID,
+		Hostname:      evt.Hostname,
+		Metric:        string(evt.Metric),
+		Phase:         evt.Phase,
+		ContainerName: evt.ContainerName,
+		EndpointName:  evt.EndpointName,
+		EndpointURL:   evt.EndpointURL,
+		Value:         evt.Value,
+		Threshold:     evt.Threshold,
+		SustainedFor:  evt.SustainedFor,
+		FiredAt:       evt.Timestamp,
+	})
+	if err != nil {
+		log.Printf("[alert] persist event failed: %v", err)
+	}
 }

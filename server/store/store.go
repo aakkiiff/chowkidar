@@ -195,6 +195,27 @@ func (s *Store) migrate() error {
 			value TEXT NOT NULL
 		)`,
 
+		// Persisted alert events. Evaluator writes one row per published event
+		// (observed/fired/resolved). UI reads recent rows on connect and
+		// increments the bell badge. seen_at IS NULL = unread. Retention
+		// pruned by RollupAndPrune using alert_retention_days (default 7).
+		`CREATE TABLE IF NOT EXISTS alert_events (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			agent_id        TEXT NOT NULL,
+			hostname        TEXT NOT NULL,
+			metric          TEXT NOT NULL,
+			phase           TEXT NOT NULL,
+			container_name  TEXT NOT NULL DEFAULT '',
+			endpoint_name   TEXT NOT NULL DEFAULT '',
+			endpoint_url    TEXT NOT NULL DEFAULT '',
+			value           REAL NOT NULL DEFAULT 0,
+			threshold       INTEGER NOT NULL DEFAULT 0,
+			sustained_for   TEXT NOT NULL DEFAULT '',
+			fired_at        TEXT NOT NULL,
+			seen_at         TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_alert_events_fired ON alert_events(fired_at DESC)`,
+
 		// One alert-rule row per agent. Thresholds are whole-percent integers
 		// for simplicity. webhook_id is nullable so the rule can be saved even
 		// if no webhook is selected yet, but no firing happens without one.
@@ -1208,6 +1229,128 @@ func (s *Store) SetAlertSettings(a AlertSettings) error {
 	return s.setAppSetting(settingAlertResendSec, strconv.Itoa(a.ResendCooldownSeconds))
 }
 
+// ── Alert events (persisted notification log) ─────────────────────────────────
+
+const (
+	settingAlertRetentionDays  = "alert_retention_days"
+	defaultAlertRetentionDays  = 7
+	maxAlertRetentionDays      = 90
+	minAlertRetentionDays      = 1
+)
+
+// AlertEvent is one persisted row from the alert pipeline. Mirrors the
+// alert.Event broker payload + adds primary key + read state.
+type AlertEvent struct {
+	ID            int64     `json:"id"`
+	AgentID       string    `json:"agent_id"`
+	Hostname      string    `json:"hostname"`
+	Metric        string    `json:"metric"`
+	Phase         string    `json:"phase"`
+	ContainerName string    `json:"container_name,omitempty"`
+	EndpointName  string    `json:"endpoint_name,omitempty"`
+	EndpointURL   string    `json:"endpoint_url,omitempty"`
+	Value         float64   `json:"value"`
+	Threshold     int       `json:"threshold"`
+	SustainedFor  string    `json:"sustained_for,omitempty"`
+	FiredAt       time.Time `json:"fired_at"`
+	SeenAt        *time.Time `json:"seen_at,omitempty"`
+}
+
+// SaveAlertEvent persists one event. Called by the evaluator before publishing
+// to the in-memory broker, so the row exists by the time a fresh SSE client
+// reconnects and asks for backlog.
+func (s *Store) SaveAlertEvent(e AlertEvent) (int64, error) {
+	res, err := s.db.Exec(`
+		INSERT INTO alert_events
+			(agent_id, hostname, metric, phase, container_name, endpoint_name, endpoint_url,
+			 value, threshold, sustained_for, fired_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.AgentID, e.Hostname, e.Metric, e.Phase, e.ContainerName, e.EndpointName, e.EndpointURL,
+		e.Value, e.Threshold, e.SustainedFor, e.FiredAt.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// RecentAlertEvents returns the latest N events ordered newest-first.
+func (s *Store) RecentAlertEvents(limit int) ([]AlertEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT id, agent_id, hostname, metric, phase, container_name, endpoint_name, endpoint_url,
+			   value, threshold, sustained_for, fired_at, seen_at
+		FROM alert_events
+		ORDER BY id DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AlertEvent{}
+	for rows.Next() {
+		var e AlertEvent
+		var firedStr string
+		var seenStr sql.NullString
+		if err := rows.Scan(&e.ID, &e.AgentID, &e.Hostname, &e.Metric, &e.Phase,
+			&e.ContainerName, &e.EndpointName, &e.EndpointURL,
+			&e.Value, &e.Threshold, &e.SustainedFor, &firedStr, &seenStr); err != nil {
+			return nil, err
+		}
+		if t, perr := time.Parse(time.RFC3339, firedStr); perr == nil {
+			e.FiredAt = t
+		}
+		if seenStr.Valid {
+			if t, perr := time.Parse(time.RFC3339, seenStr.String); perr == nil {
+				e.SeenAt = &t
+			}
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// UnseenAlertCount returns the number of events with seen_at IS NULL.
+func (s *Store) UnseenAlertCount() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM alert_events WHERE seen_at IS NULL`).Scan(&n)
+	return n, err
+}
+
+// MarkAllAlertsSeen sets seen_at = now for all currently unseen rows. Returns
+// the number affected. Global read state — not per-user.
+func (s *Store) MarkAllAlertsSeen() (int64, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.db.Exec(`UPDATE alert_events SET seen_at = ? WHERE seen_at IS NULL`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// GetAlertRetentionDays reads the configured retention; clamped to sane bounds.
+func (s *Store) GetAlertRetentionDays() int {
+	v := s.getAppSettingInt(settingAlertRetentionDays, defaultAlertRetentionDays)
+	if v < minAlertRetentionDays {
+		v = defaultAlertRetentionDays
+	}
+	if v > maxAlertRetentionDays {
+		v = maxAlertRetentionDays
+	}
+	return v
+}
+
+// SetAlertRetentionDays validates + persists the retention window.
+// Returns an error for values outside [1, 90].
+func (s *Store) SetAlertRetentionDays(days int) error {
+	if days < minAlertRetentionDays || days > maxAlertRetentionDays {
+		return fmt.Errorf("alert_retention_days must be %d-%d", minAlertRetentionDays, maxAlertRetentionDays)
+	}
+	return s.setAppSetting(settingAlertRetentionDays, strconv.Itoa(days))
+}
+
 // ── Endpoints ─────────────────────────────────────────────────────────────────
 
 const (
@@ -2039,6 +2182,13 @@ func (s *Store) RollupAndPrune(containerDays int) error {
 	// Prune container 1m aggregates beyond retention window.
 	if _, err := tx.Exec(`DELETE FROM container_metrics_1m WHERE ts_minute < ?`, ctrCutoff); err != nil {
 		return fmt.Errorf("prune container 1m: %w", err)
+	}
+
+	// Prune alert events beyond the user-configured retention window.
+	// Default 7 days, clamped 1-90 by GetAlertRetentionDays.
+	alertCutoff := time.Now().UTC().Add(-time.Duration(s.GetAlertRetentionDays()) * 24 * time.Hour).Format(time.RFC3339)
+	if _, err := tx.Exec(`DELETE FROM alert_events WHERE fired_at < ?`, alertCutoff); err != nil {
+		return fmt.Errorf("prune alert events: %w", err)
 	}
 
 	return tx.Commit()

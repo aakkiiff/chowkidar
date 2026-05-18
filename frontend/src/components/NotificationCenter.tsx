@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { streamAlerts, type AlertEvent } from '../api/client';
+import {
+  recentAlerts,
+  markAlertsSeen as apiMarkSeen,
+  streamAlerts,
+  type AlertEvent,
+  type PersistedAlertEvent,
+} from '../api/client';
 
-const MAX_ITEMS = 100;
+const MAX_ITEMS = 200;
 
 interface NotificationItem {
   uid: string;
+  // id present means server-persisted; absent means observed (transient).
+  id?: number;
   kind: 'breach' | 'resolved' | 'observed';
   hostname: string;
   containerName?: string;
@@ -35,7 +43,6 @@ function fmtMCore(m: number): string {
   return `${(m / 1000).toFixed(2)} Core`;
 }
 
-// renderValue prints "value vs threshold" with units appropriate to the metric.
 function renderValue(n: { metric: AlertEvent['metric']; value: number; threshold: number; kind: 'breach' | 'resolved' | 'observed' }) {
   const op = n.kind === 'resolved' ? '≤' : '>';
   if (n.metric === 'container_down') {
@@ -58,6 +65,29 @@ function fmtTime(iso: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+// Map a persisted DB row to the UI item shape. `kind` derives from phase:
+//   fired      → breach
+//   resolved   → resolved
+//   observed   → observed
+function fromPersisted(p: PersistedAlertEvent): NotificationItem {
+  const kind: NotificationItem['kind'] =
+    p.phase === 'resolved' ? 'resolved'
+      : p.phase === 'observed' ? 'observed'
+      : 'breach';
+  return {
+    uid: `s${p.id}`,
+    id: p.id,
+    kind,
+    hostname: p.hostname,
+    containerName: p.container_name,
+    endpointName: p.endpoint_name,
+    metric: p.metric,
+    value: p.value,
+    threshold: p.threshold,
+    timestamp: p.fired_at,
+  };
+}
+
 interface Props {
   token: string;
   onExpired: () => void;
@@ -71,16 +101,32 @@ export default function NotificationCenter({ token, onExpired }: Props) {
   const seqRef = useRef(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
+  // Initial REST seed — gives us history + unread count even before SSE
+  // connects. Then SSE `backlog` event will fully refresh the list.
+  useEffect(() => {
+    let cancelled = false;
+    recentAlerts(100)
+      .then(res => {
+        if (cancelled) return;
+        setItems(res.events.map(fromPersisted));
+        setUnread(res.unread);
+      })
+      .catch(err => {
+        if (err instanceof Error && err.message === 'Session expired') onExpired();
+      });
+    return () => { cancelled = true; };
+  }, [onExpired]);
+
+  // Live SSE — backlog frames replace the list, alert frames prepend.
   useEffect(() => {
     const ctrl = streamAlerts(
       token,
       (evt: AlertEvent) => {
-        // Log every alert event the server emits — observed (first detection),
-        // fired (sustained past the window, webhook dispatched), and resolved.
         const phase = evt.phase ?? (evt.resolved ? 'resolved' : 'fired');
         const kind: NotificationItem['kind'] =
-          phase === 'resolved' ? 'resolved' :
-          phase === 'observed' ? 'observed' : 'breach';
+          phase === 'resolved' ? 'resolved'
+            : phase === 'observed' ? 'observed'
+            : 'breach';
 
         const item: NotificationItem = {
           uid: `n${++seqRef.current}`,
@@ -97,12 +143,17 @@ export default function NotificationCenter({ token, onExpired }: Props) {
           const next = [item, ...prev];
           return next.length > MAX_ITEMS ? next.slice(0, MAX_ITEMS) : next;
         });
-        setUnread(u => u + 1);
+        // Observed events are transient (no DB row); don't bump the bell.
+        if (kind !== 'observed') setUnread(u => u + 1);
+      },
+      (backlog: PersistedAlertEvent[]) => {
+        // Server-side backlog on (re)connect. Authoritative — replace list.
+        setItems(backlog.map(fromPersisted));
+        const u = backlog.filter(b => !b.seen_at).length;
+        setUnread(u);
       },
       err => {
-        if (err instanceof Error && err.message === 'Session expired') {
-          onExpired();
-        }
+        if (err instanceof Error && err.message === 'Session expired') onExpired();
       },
     );
     return () => ctrl.abort();
@@ -119,7 +170,13 @@ export default function NotificationCenter({ token, onExpired }: Props) {
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [open]);
 
-  const markSeen = useCallback(() => setUnread(0), []);
+  const markSeen = useCallback(async () => {
+    setUnread(0);
+    try { await apiMarkSeen(); } catch { /* best-effort */ }
+  }, []);
+
+  // Clear is local-only — server keeps history per retention setting. Closing
+  // the panel and reopening will repopulate from REST seed.
   const clearAll = useCallback(() => { setItems([]); setUnread(0); }, []);
 
   return (

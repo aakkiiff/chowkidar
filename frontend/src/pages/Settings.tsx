@@ -14,6 +14,8 @@ import {
   setUserAgents,
   changeOwnPassword,
   listAgents,
+  getAlertRetention,
+  setAlertRetention,
   type AlertSettings,
   type AppUser,
   type Agent,
@@ -48,6 +50,14 @@ export default function Settings() {
   const [alertCfgSaved, setAlertCfgSaved] = useState(false);
   const [alertCfgErr, setAlertCfgErr] = useState<string | null>(null);
   const alertSavedTimer = useRef<number | null>(null);
+
+  // Notification log retention (days).
+  const [retDays, setRetDays] = useState<number | null>(null);
+  const [retDaysPristine, setRetDaysPristine] = useState<number | null>(null);
+  const [retSaving, setRetSaving] = useState(false);
+  const [retSaved, setRetSaved] = useState(false);
+  const [retErr, setRetErr] = useState<string | null>(null);
+  const retSavedTimer = useRef<number | null>(null);
 
   // User management (admin only).
   const [users, setUsers] = useState<AppUser[]>([]);
@@ -109,13 +119,16 @@ export default function Settings() {
       return;
     }
     try {
-      const [hooks, settings, epSettings, userList, agentList] = await Promise.all([
+      const [hooks, settings, epSettings, userList, agentList, ret] = await Promise.all([
         listWebhooks(token),
         getAlertSettings(token),
         getEndpointSettings(token),
         listUsers(token).catch(() => [] as AppUser[]),
         listAgents(token).catch(() => [] as Agent[]),
+        getAlertRetention().catch(() => ({ days: 7 })),
       ]);
+      setRetDays(ret.days);
+      setRetDaysPristine(ret.days);
       setWebhooks(hooks ?? []);
       setAlertCfg(settings);
       setAlertCfgPristine(settings);
@@ -189,6 +202,25 @@ export default function Settings() {
       setAlertCfgErr(err instanceof Error ? err.message : 'save failed');
     } finally {
       setAlertCfgSaving(false);
+    }
+  };
+
+  const saveRetention = async () => {
+    if (retDays == null) return;
+    setRetSaving(true);
+    setRetErr(null);
+    try {
+      const next = await setAlertRetention(retDays);
+      setRetDays(next.days);
+      setRetDaysPristine(next.days);
+      setRetSaved(true);
+      if (retSavedTimer.current != null) window.clearTimeout(retSavedTimer.current);
+      retSavedTimer.current = window.setTimeout(() => setRetSaved(false), 2500);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Session expired') { onExpired(); return; }
+      setRetErr(err instanceof Error ? err.message : 'save failed');
+    } finally {
+      setRetSaving(false);
     }
   };
 
@@ -344,6 +376,53 @@ export default function Settings() {
             title={!alertCfgDirty ? 'No changes to save' : undefined}
           >
             {alertCfgSaving ? 'Saving…' : 'Save timing'}
+          </button>
+        </div>
+      </section>
+
+      <section className="settings-block" style={{ marginBottom: 16 }}>
+        <h3 className="settings-block-title">Notification log</h3>
+        <p className="settings-hint">
+          How long persisted alert events stay in the notification bell history.
+          Older events are pruned hourly. Range: 1–90 days. Default: 7.
+        </p>
+        {retDays != null && (
+          <div className="alert-timing-grid">
+            <label className="alert-timing-cell">
+              <span className="alert-timing-label">Retention</span>
+              <div className="alert-timing-input-wrap">
+                <input
+                  type="number"
+                  min={1}
+                  max={90}
+                  className="form-input alert-timing-input"
+                  value={retDays}
+                  onChange={e => {
+                    const n = Number(e.target.value);
+                    if (Number.isFinite(n)) setRetDays(n);
+                  }}
+                  aria-label="Alert retention days"
+                />
+                <span className="alert-timing-unit">days</span>
+              </div>
+            </label>
+          </div>
+        )}
+        {retErr && <div className="login-error" style={{ marginTop: 12 }}>{retErr}</div>}
+        <div className="alert-rule-actions" style={{ marginTop: 14 }}>
+          <div className="alert-rule-save-hint" aria-live="polite">
+            {retSaved
+              ? <span className="alert-rule-saved">Saved</span>
+              : (retDays !== retDaysPristine ? <span>Unsaved changes</span> : null)}
+          </div>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={saveRetention}
+            disabled={retSaving || retDays === retDaysPristine}
+            title={retDays === retDaysPristine ? 'No changes to save' : undefined}
+          >
+            {retSaving ? 'Saving…' : 'Save retention'}
           </button>
         </div>
       </section>

@@ -515,3 +515,97 @@ func TestListAgentsByProject_FiltersToProject(t *testing.T) {
 		t.Errorf("expected h1, got %s", list[0].Hostname)
 	}
 }
+
+// ── Alert events ──────────────────────────────────────────────────────────────
+
+func TestSaveAlertEvent_AndRecent(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	_, err := s.SaveAlertEvent(AlertEvent{
+		AgentID: "agt1", Hostname: "host1", Metric: "cpu", Phase: "fired",
+		Value: 92, Threshold: 85, SustainedFor: "30s", FiredAt: now,
+	})
+	if err != nil {
+		t.Fatalf("SaveAlertEvent: %v", err)
+	}
+	_, err = s.SaveAlertEvent(AlertEvent{
+		AgentID: "agt1", Hostname: "host1", Metric: "cpu", Phase: "resolved",
+		Value: 60, Threshold: 85, FiredAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("SaveAlertEvent recovery: %v", err)
+	}
+
+	events, err := s.RecentAlertEvents(10)
+	if err != nil {
+		t.Fatalf("RecentAlertEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	// Newest first → resolved first.
+	if events[0].Phase != "resolved" {
+		t.Errorf("expected resolved at top, got %s", events[0].Phase)
+	}
+	if events[1].Phase != "fired" {
+		t.Errorf("expected fired at bottom, got %s", events[1].Phase)
+	}
+}
+
+func TestUnseenAlertCount_AndMarkSeen(t *testing.T) {
+	s := newTestStore(t)
+	for i := 0; i < 3; i++ {
+		_, err := s.SaveAlertEvent(AlertEvent{
+			AgentID: "agt1", Hostname: "h", Metric: "cpu", Phase: "fired",
+			Value: 90, Threshold: 80, FiredAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+	n, err := s.UnseenAlertCount()
+	if err != nil {
+		t.Fatalf("UnseenAlertCount: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("expected 3 unseen, got %d", n)
+	}
+
+	marked, err := s.MarkAllAlertsSeen()
+	if err != nil {
+		t.Fatalf("MarkAllAlertsSeen: %v", err)
+	}
+	if marked != 3 {
+		t.Errorf("expected 3 marked, got %d", marked)
+	}
+
+	n, _ = s.UnseenAlertCount()
+	if n != 0 {
+		t.Errorf("expected 0 unseen after mark, got %d", n)
+	}
+
+	// Mark-seen on no unseen rows = 0 affected
+	marked, _ = s.MarkAllAlertsSeen()
+	if marked != 0 {
+		t.Errorf("expected 0 on repeat mark, got %d", marked)
+	}
+}
+
+func TestAlertRetention_GetSet_Bounds(t *testing.T) {
+	s := newTestStore(t)
+	if got := s.GetAlertRetentionDays(); got != 7 {
+		t.Errorf("expected default 7, got %d", got)
+	}
+	if err := s.SetAlertRetentionDays(14); err != nil {
+		t.Errorf("SetAlertRetentionDays 14: %v", err)
+	}
+	if got := s.GetAlertRetentionDays(); got != 14 {
+		t.Errorf("expected 14, got %d", got)
+	}
+	if err := s.SetAlertRetentionDays(0); err == nil {
+		t.Error("expected error for 0 days")
+	}
+	if err := s.SetAlertRetentionDays(91); err == nil {
+		t.Error("expected error for 91 days")
+	}
+}

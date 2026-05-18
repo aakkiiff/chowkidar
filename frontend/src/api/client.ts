@@ -377,9 +377,18 @@ export interface AlertEvent {
   resolved: boolean;
 }
 
+// PersistedAlertEvent extends AlertEvent with the DB row's id + read state.
+// Returned by /alerts/recent and the SSE `backlog` event.
+export interface PersistedAlertEvent extends AlertEvent {
+  id: number;
+  fired_at: string;
+  seen_at: string | null;
+}
+
 export function streamAlerts(
   _token: string,
-  onEvent: (e: AlertEvent) => void,
+  onAlert: (e: AlertEvent) => void,
+  onBacklog: (events: PersistedAlertEvent[]) => void,
   onError: (err: unknown) => void,
 ): AbortController {
   const ctrl = new AbortController();
@@ -408,9 +417,18 @@ export function streamAlerts(
           const frame = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
           if (frame.startsWith(':')) continue;
+          // SSE frames are `event: <name>\ndata: <json>`. Default event name
+          // is `message`. Server emits `backlog` once on connect + `alert` per
+          // live event. Match the event line to route into the right handler.
+          const eventLine = frame.split('\n').find(l => l.startsWith('event: '));
           const dataLine = frame.split('\n').find(l => l.startsWith('data: '));
           if (!dataLine) continue;
-          try { onEvent(JSON.parse(dataLine.slice(6)) as AlertEvent); } catch { /* ignore */ }
+          const eventName = eventLine?.slice(7).trim() ?? 'alert';
+          try {
+            const payload = JSON.parse(dataLine.slice(6));
+            if (eventName === 'backlog') onBacklog(payload as PersistedAlertEvent[]);
+            else onAlert(payload as AlertEvent);
+          } catch { /* ignore */ }
         }
       }
     } catch (err) {
@@ -677,4 +695,38 @@ export function clearSession() {
   localStorage.removeItem(ROLE_KEY);
   // Fire-and-forget — clears the httpOnly session cookie server-side.
   fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
+}
+
+// ── Persisted alerts + retention setting ──────────────────────────────────────
+
+export interface RecentAlertsResp {
+  events: PersistedAlertEvent[];
+  unread: number;
+}
+
+export function recentAlerts(limit = 100) {
+  return request<RecentAlertsResp>(`/alerts/recent?limit=${limit}`);
+}
+
+export async function markAlertsSeen(): Promise<void> {
+  const res = await fetch(`${API_BASE}/alerts/seen`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Failed to mark alerts seen');
+  }
+}
+
+export function getAlertRetention() {
+  return request<{ days: number }>('/settings/alert-retention');
+}
+
+export function setAlertRetention(days: number) {
+  return request<{ days: number }>('/settings/alert-retention', {
+    method: 'PUT',
+    body: JSON.stringify({ days }),
+  });
 }

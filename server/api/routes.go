@@ -30,6 +30,12 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/agents/{id}/containers/{name}/logs/tail", h.requireJWT(h.TailLogs))
 	mux.HandleFunc("GET /api/v1/alerts/stream", h.requireAdmin(h.StreamAlerts))
 
+	// Persisted alert log + retention setting — admin only.
+	mux.HandleFunc("GET /api/v1/alerts/recent", h.requireAdmin(h.RecentAlerts))
+	mux.HandleFunc("POST /api/v1/alerts/seen", h.requireAdmin(h.MarkAlertsSeen))
+	mux.HandleFunc("GET /api/v1/settings/alert-retention", h.requireAdmin(h.GetAlertRetention))
+	mux.HandleFunc("PUT /api/v1/settings/alert-retention", h.requireAdmin(h.SetAlertRetention))
+
 	// Admin-only: agent CRUD + all configuration surfaces.
 	mux.HandleFunc("POST /api/v1/agents/register", h.requireAdmin(h.RegisterAgent))
 	mux.HandleFunc("PATCH /api/v1/agents/{id}", h.requireAdmin(h.RenameAgent))
