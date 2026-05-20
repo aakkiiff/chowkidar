@@ -709,6 +709,18 @@ export function recentAlerts(limit = 100) {
   return request<RecentAlertsResp>(`/alerts/recent?limit=${limit}`);
 }
 
+export async function clearAlerts(): Promise<void> {
+  const res = await fetch(`${API_BASE}/alerts`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (res.status === 401) { clearSession(); throw new Error('Session expired'); }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || 'Failed to clear alerts');
+  }
+}
+
 export async function markAlertsSeen(): Promise<void> {
   const res = await fetch(`${API_BASE}/alerts/seen`, {
     method: 'POST',

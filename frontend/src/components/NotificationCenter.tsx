@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   recentAlerts,
   markAlertsSeen as apiMarkSeen,
+  clearAlerts as apiClearAlerts,
   streamAlerts,
   type AlertEvent,
   type PersistedAlertEvent,
@@ -175,9 +176,19 @@ export default function NotificationCenter({ token, onExpired }: Props) {
     try { await apiMarkSeen(); } catch { /* best-effort */ }
   }, []);
 
-  // Clear is local-only — server keeps history per retention setting. Closing
-  // the panel and reopening will repopulate from REST seed.
-  const clearAll = useCallback(() => { setItems([]); setUnread(0); }, []);
+  // Clear permanently wipes the persisted alert log on the server. Asks for
+  // confirmation because there's no undo. Local state is reset only after the
+  // server delete succeeds, so a failed request doesn't desync the UI.
+  const clearAll = useCallback(async () => {
+    if (!confirm('Permanently delete all notification history? This cannot be undone.')) return;
+    try {
+      await apiClearAlerts();
+      setItems([]);
+      setUnread(0);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to clear notifications');
+    }
+  }, []);
 
   return (
     <div className="notif-wrap" ref={panelRef}>

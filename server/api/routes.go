@@ -33,6 +33,7 @@ func (h *Handler) Routes() http.Handler {
 	// Persisted alert log + retention setting — admin only.
 	mux.HandleFunc("GET /api/v1/alerts/recent", h.requireAdmin(h.RecentAlerts))
 	mux.HandleFunc("POST /api/v1/alerts/seen", h.requireAdmin(h.MarkAlertsSeen))
+	mux.HandleFunc("DELETE /api/v1/alerts", h.requireAdmin(h.ClearAlerts))
 	mux.HandleFunc("GET /api/v1/settings/alert-retention", h.requireAdmin(h.GetAlertRetention))
 	mux.HandleFunc("PUT /api/v1/settings/alert-retention", h.requireAdmin(h.SetAlertRetention))
 

@@ -39,6 +39,18 @@ func (h *Handler) MarkAlertsSeen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"marked": n})
 }
 
+// ClearAlerts permanently deletes all persisted alert events. Triggered by
+// the bell's Clear button. Admin-only; irreversible. Bell badge + history
+// list immediately empty on the dashboard.
+func (h *Handler) ClearAlerts(w http.ResponseWriter, r *http.Request) {
+	n, err := h.store.DeleteAllAlertEvents()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to clear alerts"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"deleted": n})
+}
+
 // GetAlertRetention returns the configured retention window in days.
 func (h *Handler) GetAlertRetention(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{

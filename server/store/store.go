@@ -1335,6 +1335,17 @@ func (s *Store) UnseenAlertCount() (int, error) {
 	return n, err
 }
 
+// DeleteAllAlertEvents wipes the notification history. Triggered by the
+// frontend "Clear" button — permanent and irreversible. Returns the number
+// of rows removed.
+func (s *Store) DeleteAllAlertEvents() (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM alert_events`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // MarkAllAlertsSeen sets seen_at = now for all currently unseen rows. Returns
 // the number affected. Global read state — not per-user.
 func (s *Store) MarkAllAlertsSeen() (int64, error) {
