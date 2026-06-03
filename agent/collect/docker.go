@@ -168,7 +168,7 @@ func (d *DockerCollector) collectOne(ctx context.Context, id, name, image, statu
 		Image:        getImageName(image),
 		Status:       status,
 		CPUPercent:   calculateCPU(s, d.cpuCores),
-		MemUsedMB:    float64(s.MemoryStats.Usage) / 1024 / 1024,
+		MemUsedMB:    float64(workingSet(s.MemoryStats)) / 1024 / 1024,
 		MemLimitMB:   float64(s.MemoryStats.Limit) / 1024 / 1024,
 		RestartCount: restartCount,
 		StartedAt:    startedAt,
@@ -207,8 +207,26 @@ type cpuUsage struct {
 }
 
 type memStats struct {
-	Usage uint64 `json:"usage"`
-	Limit uint64 `json:"limit"`
+	Usage uint64            `json:"usage"`
+	Limit uint64            `json:"limit"`
+	Stats map[string]uint64 `json:"stats"`
+}
+
+// workingSet replicates `docker stats` CLI memory display: raw cgroup
+// usage minus page-cache so kernel-cached file pages don't inflate the
+// reading. cgroup v2 reports inactive_file; v1 reports cache. Both keys
+// appear under MemoryStats.Stats in the API response.
+func workingSet(m memStats) uint64 {
+	if v, ok := m.Stats["inactive_file"]; ok && v <= m.Usage {
+		return m.Usage - v
+	}
+	if v, ok := m.Stats["total_inactive_file"]; ok && v <= m.Usage {
+		return m.Usage - v
+	}
+	if v, ok := m.Stats["cache"]; ok && v <= m.Usage {
+		return m.Usage - v
+	}
+	return m.Usage
 }
 
 type netStats struct {
